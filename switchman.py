@@ -2510,20 +2510,28 @@ class _ModelSearchDelegate(objc.lookUpClass("NSObject")):
         self._filtered: list[str] = []
         self._table = None
         self._panel = None
+        self._engine_filter = "All"   # "All" | "MLX" | "GGUF"
         return self
 
     def setNames_(self, names):
         self._all_names = names
         self._filtered = names[:]
 
-    def filter_(self, query: str):
+    def applyFilter_(self, query: str):
         q = query.lower()
-        if q:
-            self._filtered = [n for n in self._all_names
-                              if q in (self._app._alias(n) or n).lower()
-                              or q in n.lower()]
-        else:
-            self._filtered = self._all_names[:]
+        result = []
+        for n in self._all_names:
+            # Engine filter
+            if self._engine_filter != "All":
+                entry = self._app._model_map.get(n)
+                kind = (entry[1] if entry else "mlx").upper()
+                if kind != self._engine_filter:
+                    continue
+            # Text filter
+            if q and q not in (self._app._alias(n) or n).lower() and q not in n.lower():
+                continue
+            result.append(n)
+        self._filtered = result
         if self._table:
             self._table.reloadData()
             if self._filtered:
@@ -2543,11 +2551,13 @@ class _ModelSearchDelegate(objc.lookUpClass("NSObject")):
         is_active = self._app._active == name
         is_default = self._app._cfg.get("default_model") == name
         prefix = "▶ " if is_active else ("★ " if is_default else "  ")
+        # Pull size and context from meta cache
         meta = self._app._get_model_meta(name)
-        meta_str = f"  {meta[0]}" if meta else ""
-        return f"{prefix}{display}{meta_str}"
+        size_str = next((m.strip() for m in meta if "size:" in m), "")
+        ctx_str  = next((m.strip() for m in meta if "ctx:"  in m), "")
+        detail = "  —  " + "  ".join(filter(None, [ctx_str, size_str])) if (size_str or ctx_str) else ""
+        return f"{prefix}{display}{detail}"
 
-    # NSTableViewDelegate — double-click or Enter selects
     def tableViewSelectionDidChange_(self, note):
         pass
 
@@ -2558,7 +2568,6 @@ class _ModelSearchDelegate(objc.lookUpClass("NSObject")):
         if 0 <= row < len(self._filtered):
             name = self._filtered[row]
             self._panel.orderOut_(None)
-            # Simulate a menu selection
             class _FakeSender:
                 pass
             s = _FakeSender()
@@ -2567,8 +2576,11 @@ class _ModelSearchDelegate(objc.lookUpClass("NSObject")):
 
 
 def _open_model_search(app) -> None:
-    """Show a small floating search panel for quick model switching."""
-    W, H = 480, 300
+    """Show a floating search panel for quick model switching.
+    ⌥⌘Space opens it directly without going through the menu."""
+    from AppKit import NSTableView, NSTableColumn, NSSegmentedControl
+
+    W, H = 520, 340
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         ((0, 0), (W, H)),
         # titled | closable | resizable | nonactivating
@@ -2579,44 +2591,54 @@ def _open_model_search(app) -> None:
     panel.setLevel_(8)  # NSFloatingWindowLevel
     cv = panel.contentView()
 
-    # Search field
-    sf = NSTextField.alloc().initWithFrame_(((_PAD, H - _PAD - 28), (W - _PAD*2, 28)))
-    sf.setPlaceholderString_("Type to filter models…")
+    y = H - _PAD
+
+    # ── Search field ──────────────────────────────────────────────────────────
+    y -= 28
+    sf = NSTextField.alloc().initWithFrame_(((_PAD, y), (W - _PAD*2, 28)))
+    sf.setPlaceholderString_("Type to filter models…  (⌥⌘Space to open)")
     sf.setBezeled_(True)
     sf.setBezelStyle_(1)
     sf.setFont_(NSFont.systemFontOfSize_(14.0))
     cv.addSubview_(sf)
 
-    # Results table inside a scroll view
-    table_y = _PAD + 36
-    table_h = H - _PAD - 28 - _PAD - 36
-    scroll = NSScrollView.alloc().initWithFrame_(
-        ((_PAD, table_y), (W - _PAD*2, table_h)))
+    # ── Engine filter (All / MLX / GGUF) ─────────────────────────────────────
+    y -= _RG + 24
+    seg = NSSegmentedControl.alloc().initWithFrame_(((_PAD, y), (180, 24)))
+    seg.setSegmentCount_(3)
+    seg.setLabel_("All",  0)
+    seg.setLabel_("MLX",  1)
+    seg.setLabel_("GGUF", 2)
+    seg.setSelectedSegment_(0)
+    seg.setSegmentStyle_(1)   # NSSegmentStyleRounded
+    cv.addSubview_(seg)
+
+    # ── Results table ─────────────────────────────────────────────────────────
+    y -= _RG + 4
+    table_h = y - _PAD - 36  # leave room for button row
+    scroll = NSScrollView.alloc().initWithFrame_(((_PAD, _PAD + 36), (W - _PAD*2, table_h)))
     scroll.setHasVerticalScroller_(True)
     scroll.setAutohidesScrollers_(True)
 
-    from AppKit import NSTableView, NSTableColumn
     tv = NSTableView.alloc().initWithFrame_(((0, 0), (W - _PAD*2, table_h)))
     col = NSTableColumn.alloc().initWithIdentifier_("model")
     col.setWidth_(W - _PAD*2 - 20)
-    col.headerCell().setStringValue_("Model")
     tv.addTableColumn_(col)
     tv.setHeaderView_(None)
     tv.setUsesAlternatingRowBackgroundColors_(True)
-    tv.setRowHeight_(20)
+    tv.setRowHeight_(22)
     scroll.setDocumentView_(tv)
     cv.addSubview_(scroll)
 
-    # Close / select button row
-    close_y = _PAD
-    from AppKit import NSButton
+    # ── Load Model button ─────────────────────────────────────────────────────
     sel_btn = NSButton.alloc().initWithFrame_(
-        ((W - _PAD - 100, close_y), (100, 28)))
+        ((W - _PAD - 110, _PAD), (110, 28)))
     sel_btn.setTitle_("Load Model")
     sel_btn.setBezelStyle_(1)
+    sel_btn.setKeyEquivalent_("\r")
     cv.addSubview_(sel_btn)
 
-    # Wire delegate
+    # ── Wire delegate ─────────────────────────────────────────────────────────
     all_names = sorted(
         [n for n in app._model_map if n not in app._cfg.get("hidden_models", [])],
         key=lambda n: _hf_sort_key({"modelId": app._alias(n) or n})
@@ -2632,38 +2654,50 @@ def _open_model_search(app) -> None:
         tv.selectRowIndexes_byExtendingSelection_(
             objc.lookUpClass("NSIndexSet").indexSetWithIndex_(0), False)
 
-    # Search field → filter callback via a small NSObject shim
+    # ── Search field delegate (text change + keyboard nav) ────────────────────
     class _SFDelegate(objc.lookUpClass("NSObject")):
         def controlTextDidChange_(self, note):
-            delegate.filter_(sf.stringValue())
+            delegate.applyFilter_(sf.stringValue())
+
         def control_textView_doCommandBySelector_(self, ctrl, tv2, sel):
-            import objc as _objc
-            sel_str = _objc.selector.name if hasattr(sel, 'name') else str(sel)
             if "insertNewline" in str(sel):
                 delegate.selectCurrent()
                 return True
             if "moveDown" in str(sel):
-                row = max(0, (self._table_ref.selectedRow() + 1))
-                self._table_ref.selectRowIndexes_byExtendingSelection_(
+                row = min(self._tv.selectedRow() + 1, len(delegate._filtered) - 1)
+                self._tv.selectRowIndexes_byExtendingSelection_(
                     objc.lookUpClass("NSIndexSet").indexSetWithIndex_(row), False)
-                self._table_ref.scrollRowToVisible_(row)
+                self._tv.scrollRowToVisible_(row)
                 return True
             if "moveUp" in str(sel):
-                row = max(0, self._table_ref.selectedRow() - 1)
-                self._table_ref.selectRowIndexes_byExtendingSelection_(
+                row = max(self._tv.selectedRow() - 1, 0)
+                self._tv.selectRowIndexes_byExtendingSelection_(
                     objc.lookUpClass("NSIndexSet").indexSetWithIndex_(row), False)
-                self._table_ref.scrollRowToVisible_(row)
+                self._tv.scrollRowToVisible_(row)
                 return True
             return False
 
     sfd = _SFDelegate.alloc().init()
-    sfd._table_ref = tv
+    sfd._tv = tv
     sf.setDelegate_(sfd)
 
-    # Button action
+    # ── Segmented control → engine filter ─────────────────────────────────────
+    class _SegTarget(objc.lookUpClass("NSObject")):
+        def changed_(self, sender):
+            labels = ["All", "MLX", "GGUF"]
+            idx = sender.selectedSegment()
+            delegate._engine_filter = labels[idx] if 0 <= idx < 3 else "All"
+            delegate.applyFilter_(sf.stringValue())
+
+    seg_target = _SegTarget.alloc().init()
+    seg.setTarget_(seg_target)
+    seg.setAction_(objc.selector(seg_target.changed_, signature=b"v@:@"))
+
+    # ── Load Model button ─────────────────────────────────────────────────────
     class _BtnTarget(objc.lookUpClass("NSObject")):
         def clicked_(self, _s):
             delegate.selectCurrent()
+
     btn_target = _BtnTarget.alloc().init()
     sel_btn.setTarget_(btn_target)
     sel_btn.setAction_(objc.selector(btn_target.clicked_, signature=b"v@:@"))
@@ -2672,6 +2706,7 @@ def _open_model_search(app) -> None:
     app._search_panel = panel
     app._search_delegate = delegate
     app._search_sfd = sfd
+    app._search_seg = seg_target
     app._search_btn = btn_target
 
     NSApp.activateIgnoringOtherApps_(True)
@@ -2748,7 +2783,7 @@ class Switchman(rumps.App):
                                 CFMachPortCreateRunLoopSource, CFRunLoopGetCurrent,
                                 CFRunLoopAddSource, CFRunLoopRun,
                                 kCGSessionEventTap, kCGHeadInsertEventTap,
-                                kCGEventFlagMaskAlternate, kCGEventKeyDown,
+                                kCGEventFlagMaskAlternate, kCGEventFlagMaskCommand, kCGEventKeyDown,
                                 CGEventGetIntegerValueField, kCGKeyboardEventKeycode)
             from CoreFoundation import kCFRunLoopCommonModes
         except ImportError:
@@ -2763,7 +2798,10 @@ class Switchman(rumps.App):
                 keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
                 mods = event.flags() if hasattr(event, 'flags') else 0
                 if keycode == SPACE_KEYCODE and (mods & kCGEventFlagMaskAlternate):
-                    self._open_menu_from_hotkey()
+                    if mods & kCGEventFlagMaskCommand:
+                        self._open_model_search(None)
+                    else:
+                        self._open_menu_from_hotkey()
             except Exception:
                 pass
             return event

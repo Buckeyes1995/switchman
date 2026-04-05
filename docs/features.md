@@ -110,8 +110,9 @@ Hover any model → **★ Default at startup** to set it (click again to clear).
 
 ## Quick Model Search
 
-**🔍 Search Models…** in the main menu opens a floating panel:
-- Type to filter models instantly
+**🔍 Search Models…** in the main menu (or press **⌥⌘Space** from anywhere) opens a floating panel:
+- **All / MLX / GGUF** segment filter — scope results to one engine type
+- Type to filter models instantly; results show context length and size on disk
 - Arrow keys to navigate
 - Enter or **Load Model** to switch
 - Sorted same as HF download results (org → name → params → quant)
@@ -172,7 +173,7 @@ All sync options default to off. Enable in **⚙ Settings → Open Settings…**
 | **Model aliases** | Hover model → **⚙ Settings…** → Alias field |
 | **Model notes** | Hover model → **⚙ Settings…** → Note field (shown as 📝 in menu) |
 | **Recent models** | Last 5 selections pinned to top of menu |
-| **Global hotkey** | ⌥Space opens menu from anywhere (requires Accessibility permission) |
+| **Global hotkeys** | ⌥Space opens menu; ⌥⌘Space opens Quick Search — from anywhere (requires Accessibility permission) |
 | **Notifications** | Fires on model ready and server crash — toggle in Settings |
 | **Memory pressure** | 🟢/🟡/🔴 in Settings submenu; 🔴 shown in menu bar title when critical |
 

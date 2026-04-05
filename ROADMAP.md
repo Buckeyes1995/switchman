@@ -6,10 +6,8 @@ Features planned, in rough priority order. Contributions welcome.
 
 ## In Progress / Next Up
 
-### Quick Model Search Improvements
-- Filter by engine type (MLX / GGUF)
-- Show model size and context length in results
-- Keyboard shortcut to open search directly (without going through menu)
+### Model Visibility Manager
+Allow users to explicitly control which models appear in the menu. On first run (or via Settings), present a checklist of all discovered models — check to include, uncheck to hide. When Switchman detects a new model directory on refresh, prompt the user: *"New model found: X — add to menu?"* Replaces the current hide-only flow.
 
 ---
 
