@@ -23,14 +23,8 @@ Save / Run Benchmark buttons now use the system accent color.
 ### NSVisualEffectView Vibrancy Backgrounds
 Replace the plain gray window backgrounds on all panels (Settings, per-model Settings, Benchmark, Quick Test) with `NSVisualEffectView` using `.sidebar` or `.hudWindow` material. Gives the frosted-glass translucency that native Mac apps use. One `NSVisualEffectView` as the root content view of each panel; existing subviews stay the same.
 
-### Accent-Colored Primary Buttons
-Use `NSColor.controlAccentColor()` on the Save / Run Benchmark / Close buttons to tint them with the user's system accent color. Currently all buttons are identical plain bezel style — the primary action should stand out visually. Set `bezelColor` on the `NSButton`.
-
 ### NSBox Section Dividers
 Replace the bold plain-text section headers in panels (Paths, oMLX, Behavior, Sampling, etc.) with `NSBox` title separators (`boxType = NSBoxSeparator` + a label above). Cleaner visual grouping with less visual noise.
-
-### Titlebar Transparency on Panels
-Call `setTitlebarAppearsTransparent_(True)` and `setMovableByWindowBackground_(True)` on settings panels to blend the titlebar into the window body — removes the hard visual break at the top that makes panels look like generic dialogs.
 
 ### SF Symbols for Menu Icons
 Replace Unicode emoji (⚙, ⬇, ⏱, ▶, ⊘) with proper SF Symbol images via `NSImage.imageWithSystemSymbolName_accessibilityDescription_()`. SF Symbols render crisply at any size, automatically adapt to dark/light mode, and look consistent with the rest of macOS.
