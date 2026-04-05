@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import rumps
@@ -21,13 +21,12 @@ try:
         NSModalResponseOK, NSOpenPanel, NSPanel, NSPopUpButton,
         NSScrollView, NSTextField, NSTextView, NSURL, NSView, NSWindow,
     )
-    from Foundation import NSObject, NSThread
+    from Foundation import NSObject
     from WebKit import WKWebView, WKWebViewConfiguration
     try:
         from UserNotifications import (
             UNUserNotificationCenter, UNMutableNotificationContent,
-            UNNotificationRequest, UNAuthorizationOptionAlert,
-            UNAuthorizationOptionSound,
+            UNNotificationRequest,
         )
     except ImportError:
         UNUserNotificationCenter = None
@@ -3199,7 +3198,8 @@ class Switchman(rumps.App):
         try:
             self._build_menu()
         except Exception:
-            import traceback, logging
+            import traceback
+            import logging
             logging.error("_build_menu exception:\n%s", traceback.format_exc())
         if self._start_poll_on_rebuild:
             self._start_poll_on_rebuild = False
@@ -3209,7 +3209,8 @@ class Switchman(rumps.App):
             try:
                 run_benchmark_results_panel(*args)
             except Exception:
-                import traceback, logging
+                import traceback
+                import logging
                 logging.error("results panel exception:\n%s", traceback.format_exc())
 
     def _update_title(self):
@@ -3254,7 +3255,8 @@ class Switchman(rumps.App):
                 try:
                     run_benchmark_results_panel(*args)
                 except Exception:
-                    import traceback, logging
+                    import traceback
+                    import logging
                     logging.error("results panel exception:\n%s", traceback.format_exc())
             return
         self._flash_state = not self._flash_state
@@ -3841,8 +3843,8 @@ class Switchman(rumps.App):
     def _open_manage_models(self, _=None):
         """Open a checklist panel to show/hide models and clear the model list."""
         from AppKit import (
-            NSWindow, NSScrollView, NSView, NSButton, NSTextField,
-            NSMakeRect, NSColor, NSFont,
+            NSWindow, NSScrollView, NSView, NSButton,
+            NSMakeRect,
             NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
             NSBackingStoreBuffered, NSSwitchButton,
         )
@@ -3986,7 +3988,6 @@ _QUANT_ORDER = {
 
 def _hf_parse_quant(model_id: str) -> int:
     """Return a quant quality score (higher = better). 0 if unknown."""
-    import re
     lower = model_id.lower()
     # Try longest match first
     for key in sorted(_QUANT_ORDER, key=len, reverse=True):
@@ -4152,7 +4153,8 @@ class _HFDownloadHandler(NSObject):
 
         def _do():
             try:
-                import fnmatch, requests
+                import fnmatch
+                import requests
                 from huggingface_hub import model_info as hf_model_info, hf_hub_url
                 from huggingface_hub.utils import build_hf_headers
 

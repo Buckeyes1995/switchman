@@ -40,6 +40,19 @@ The benchmark history and results panels use hardcoded light-mode colors (`#f5f5
 
 ---
 
+## Developer Infrastructure
+
+### Test Suite for Pure Logic (requires refactor)
+`switchman.py` is a single file where UI and logic are interleaved, making AppKit-free unit testing impossible without first extracting the pure functions. The plan:
+
+1. Extract testable logic into `switchman_core.py`: `load_config`, `save_config`, `model_params`, `mlx_sampling_params`, `llama_sampling_params`, `scan_mlx`, `scan_gguf`, `_hf_parse_params`, `_hf_parse_quant`, `_hf_sort_key`, benchmark result aggregation, `parse_gguf_metadata`, `parse_mlx_metadata`
+2. Write a `pytest` suite in `tests/` covering config round-trips, parameter merging, model scanning (temp dir fixtures), and HF sort/parse logic
+3. Add a `pytest` step to the CI workflow (runs on Linux — no macOS required since the extracted module has no AppKit imports)
+
+Held until there's appetite for the refactor — the extraction itself is low risk but touches import paths throughout the file.
+
+---
+
 ## Planned Features
 
 ### Token / Memory Cost Estimator

@@ -1,0 +1,10 @@
+[lint]
+# E701/E702 — single-line compound statements used intentionally
+#              (dataclass __post_init__ compact assignments)
+# E741      — ambiguous `l` variable in list comprehensions (idiomatic style)
+# F841      — unused local assignments; known tech debt, tracked in ROADMAP
+ignore = ["E701", "E702", "E741", "F841"]
+
+# Enforce: unused imports, ambiguous names, multiple imports per line,
+#          redefined-while-unused
+select = ["E4", "E7", "E9", "F"]
