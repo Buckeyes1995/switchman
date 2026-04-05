@@ -677,8 +677,6 @@ def run_settings_panel(cfg: dict) -> bool:
     for key, title in [
         ("notifications",  "macOS notification when model ready"),
         ("sync_env",       "Write env file (LLM_BASE_URL) on switch"),
-        ("sync_cursor",    "Sync Cursor MCP config on switch"),
-        ("sync_continue",  "Sync Continue.dev config on switch"),
     ]:
         c = NSButton.alloc().initWithFrame_(((x_fld, fy(cur)), (FW, _RH)))
         c.setButtonType_(3)
@@ -2002,8 +2000,6 @@ DEFAULTS = {
     "recent_models":  [],         # [model_name, ...] max 5, most recent first
     "default_model":  "",         # model name to auto-load on startup (empty = none)
     # Feature flags
-    "sync_cursor":    False,      # sync Cursor MCP config on model switch
-    "sync_continue":  False,      # sync Continue.dev config on model switch
     "sync_env":       True,       # write ~/.config/switchman/env on switch
     "notifications":  True,       # macOS notification when model is ready
 }
@@ -2349,37 +2345,6 @@ def set_opencode_model(cfg: dict, provider: str, model_id: str,
         pass
 
 
-def sync_cursor_config(port: int) -> None:
-    """Update Cursor MCP config to point at the current inference server."""
-    path = Path.home() / ".cursor" / "mcp.json"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        cfg = json.loads(path.read_text()) if path.exists() else {}
-        cfg.setdefault("mcpServers", {})["local-llm"] = {
-            "url": f"http://localhost:{port}/v1"
-        }
-        path.write_text(json.dumps(cfg, indent=2) + "\n")
-    except Exception:
-        pass
-
-
-def sync_continue_config(port: int) -> None:
-    """Update Continue.dev config to point at the current inference server."""
-    path = Path.home() / ".continue" / "config.json"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        cfg = json.loads(path.read_text()) if path.exists() else {}
-        models = cfg.setdefault("models", [])
-        entry = next((m for m in models if m.get("title") == "Local LLM"), None)
-        if entry is None:
-            entry = {"title": "Local LLM", "provider": "openai"}
-            models.insert(0, entry)
-        entry["apiBase"] = f"http://localhost:{port}/v1"
-        path.write_text(json.dumps(cfg, indent=2) + "\n")
-    except Exception:
-        pass
-
-
 def sync_env_file(port: int) -> None:
     """Write LLM_BASE_URL to ~/.config/switchman/env for shell sourcing."""
     try:
@@ -2394,10 +2359,6 @@ def sync_env_file(port: int) -> None:
 
 def sync_clients(cfg: dict, port: int) -> None:
     """Sync all enabled external client configs. Safe to call from any thread."""
-    if cfg.get("sync_cursor"):
-        sync_cursor_config(port)
-    if cfg.get("sync_continue"):
-        sync_continue_config(port)
     if cfg.get("sync_env", True):
         sync_env_file(port)
 

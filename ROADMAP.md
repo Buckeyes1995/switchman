@@ -95,10 +95,44 @@ On model switch, update `~/.aider.conf.yml` with the new `openai-api-base` (port
 On model switch, update `~/.config/zed/settings.json` under `assistant` → `default_model` with the new provider URL and model name. Zed's assistant supports custom OpenAI-compatible providers.
 
 ### IDE / Client Sync — Fix Continue.dev
-Current sync only updates `apiBase` (the port) but not the model name. Fix to also write the active model name so Continue selects the right model after a switch. Needs real-world testing.
+Previous sync only updated `apiBase` (the port) but not the model name. Code was removed pending a proper implementation. Starting point:
 
-### IDE / Client Sync — Remove Cursor
-Current Cursor sync writes to `~/.cursor/mcp.json` as an MCP tool server, which has nothing to do with Cursor's AI model provider. Remove it — it does nothing useful and the README claim is misleading.
+```python
+def sync_continue_config(port: int, model_name: str) -> None:
+    path = Path.home() / ".continue" / "config.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cfg = json.loads(path.read_text()) if path.exists() else {}
+        models = cfg.setdefault("models", [])
+        entry = next((m for m in models if m.get("title") == "Local LLM"), None)
+        if entry is None:
+            entry = {"title": "Local LLM", "provider": "openai"}
+            models.insert(0, entry)
+        entry["apiBase"] = f"http://localhost:{port}/v1"
+        entry["model"] = model_name   # was missing — caused wrong model to be used
+        path.write_text(json.dumps(cfg, indent=2) + "\n")
+    except Exception:
+        pass
+```
+
+Needs real-world testing against current Continue.dev config format before re-adding.
+
+### IDE / Client Sync — Cursor (needs rethink)
+Previous implementation wrote to `~/.cursor/mcp.json` as an MCP tool server — wrong approach. MCP servers provide tools/context, not the AI model. Removed. Cursor's AI model provider is not easily configurable externally; needs investigation before re-adding. Previous (incorrect) code for reference:
+
+```python
+def sync_cursor_config(port: int) -> None:
+    path = Path.home() / ".cursor" / "mcp.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cfg = json.loads(path.read_text()) if path.exists() else {}
+        cfg.setdefault("mcpServers", {})["local-llm"] = {
+            "url": f"http://localhost:{port}/v1"
+        }
+        path.write_text(json.dumps(cfg, indent=2) + "\n")
+    except Exception:
+        pass
+```
 
 ---
 
