@@ -165,6 +165,17 @@ def _browse_btn(target, field: NSTextField,
     target._browse_map[tag] = (field, choose_dir)
     return b
 
+def show_error_alert(title: str, message: str) -> None:
+    """Show an NSAlert on the main thread. Call only from main thread."""
+    from AppKit import NSAlert
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_(title)
+    alert.setInformativeText_(message)
+    alert.addButtonWithTitle_("OK")
+    NSApp.activateIgnoringOtherApps_(True)
+    alert.runModal()
+
+
 class _PanelHandler(NSObject):
     """Shared NSObject action target for modal settings panels."""
 
@@ -201,6 +212,29 @@ class _PanelHandler(NSObject):
         # Reload the WebView with the now-empty history
         if hasattr(self, '_history_wv'):
             self._history_wv.loadHTMLString_baseURL_(_bench_history_html(), None)
+
+    def exportCSV_(self, _s):
+        try:
+            data = json.loads(BENCH_HISTORY_PATH.read_text()) if BENCH_HISTORY_PATH.exists() else []
+        except Exception:
+            return
+        lines = ["date,model,mode,label,tok_per_sec,tokens,total_ms,error"]
+        for run in data:
+            for r in run.get("results", []):
+                lines.append(",".join([
+                    run.get("timestamp", run.get("date", "")),
+                    run.get("model", ""), run.get("mode", ""),
+                    f'"{r.get("label","")}"',
+                    str(r.get("tok_per_sec", 0)), str(r.get("tokens_out", 0)),
+                    str(r.get("total_ms", 0)), f'"{r.get("error","")}"',
+                ]))
+        from AppKit import NSSavePanel
+        p = NSSavePanel.savePanel()
+        p.setNameFieldStringValue_("bench_history.csv")
+        p.setAllowedFileTypes_(["csv"])
+        NSApp.activateIgnoringOtherApps_(True)
+        if p.runModal() == NSModalResponseOK:
+            Path(p.URL().path()).write_text("\n".join(lines) + "\n")
 
     def editPrompts_(self, _s):
         NSApp.stopModalWithCode_(_EDIT_PROMPTS_CODE)
@@ -250,10 +284,26 @@ class _TestPromptHandler(NSObject):
         self._buf: list[str] = []
         self._t0 = time.time()
         self._tok_count = 0
+        self._t_first = None
+        self._ttft_shown = False
         self._drain_timer = rumps.Timer(self.drainTick_, 0.1)
         self._drain_timer.start()
         threading.Thread(target=self._do_stream,
                          args=(prompt,), daemon=True).start()
+        if hasattr(self, '_buf2'):
+            self._buf2.clear()
+            self._streaming2 = False
+            self._tok_count2 = 0
+            self._t_first2 = None
+            self._ttft_shown2 = False
+            model2_name = None
+            if hasattr(self, '_model2_popup') and hasattr(self, '_compare_chk'):
+                if self._compare_chk.state():
+                    model2_name = self._model2_popup.titleOfSelectedItem()
+            if model2_name:
+                self._streaming2 = True
+                threading.Thread(target=self._do_stream2,
+                                 args=(prompt, model2_name), daemon=True).start()
 
     def _do_stream(self, prompt):
         try:
@@ -286,6 +336,8 @@ class _TestPromptHandler(NSObject):
                         chunk = json.loads(payload)
                         delta = chunk["choices"][0]["delta"].get("content", "")
                         if delta:
+                            if self._t_first is None:
+                                self._t_first = time.time()
                             self._buf.append(delta)
                             self._tok_count += 1
                     except Exception:
@@ -296,31 +348,102 @@ class _TestPromptHandler(NSObject):
             self._streaming = False
 
     def drainTick_(self, timer):
+        from AppKit import NSAttributedString
         if self._buf:
             chunk = "".join(self._buf)
             self._buf.clear()
             ts = self._output_tv.textStorage()
-            from AppKit import NSAttributedString
             ts.appendAttributedString_(
                 NSAttributedString.alloc().initWithString_(chunk))
             self._output_tv.scrollRangeToVisible_(
                 (self._output_tv.string().length(), 0))
+        # Drain buf2 into second output view if compare mode is active
+        if hasattr(self, '_buf2') and self._buf2 and hasattr(self, '_output_tv2'):
+            chunk2 = "".join(self._buf2)
+            self._buf2.clear()
+            ts2 = self._output_tv2.textStorage()
+            ts2.appendAttributedString_(
+                NSAttributedString.alloc().initWithString_(chunk2))
+            self._output_tv2.scrollRangeToVisible_(
+                (self._output_tv2.string().length(), 0))
         elapsed = time.time() - self._t0
         if self._tok_count > 0 and elapsed > 0:
+            ttft_part = ""
+            if self._t_first is not None and not self._ttft_shown:
+                ttft_ms = (self._t_first - self._t0) * 1000
+                ttft_part = f"TTFT {ttft_ms:.0f}ms  |  "
+                self._ttft_shown = True
+            elif self._ttft_shown and self._t_first is not None:
+                ttft_ms = (self._t_first - self._t0) * 1000
+                ttft_part = f"TTFT {ttft_ms:.0f}ms  |  "
             self._tps_lbl.setStringValue_(
-                f"{self._tok_count / elapsed:.1f} tok/s  ({self._tok_count} tokens)")
-        if not self._streaming and not self._buf:
+                f"{ttft_part}{self._tok_count / elapsed:.1f} tok/s  ({self._tok_count} tokens)")
+        streaming2 = getattr(self, '_streaming2', False)
+        buf2_empty = not getattr(self, '_buf2', [])
+        if not self._streaming and not self._buf and not streaming2 and buf2_empty:
             timer.stop()
 
     def clear_(self, _s):
         self._output_tv.setString_("")
         self._tps_lbl.setStringValue_("")
         self._input_fld.setStringValue_("")
+        if hasattr(self, '_output_tv2'):
+            self._output_tv2.setString_("")
+
+    def compareChanged_(self, sender):
+        on = bool(sender.state())
+        if hasattr(self, '_model2_popup'):
+            self._model2_popup.setHidden_(not on)
+        if hasattr(self, '_model2_lbl'):
+            self._model2_lbl.setHidden_(not on)
+        if hasattr(self, '_scroll2'):
+            self._scroll2.setHidden_(not on)
+
+    def _do_stream2(self, prompt, model2_name):
+        try:
+            cfg = self._app_ref._cfg
+            port = cfg.get("omlx_port", 8000)
+            api_key = cfg.get("omlx_api_key", "")
+            p = self._app_ref._model_params(model2_name) if hasattr(self._app_ref, "_model_params") else {}
+            body = json.dumps({
+                "model": model2_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": p.get("max_tokens", 512) if p else 512,
+                "stream": True,
+            }).encode()
+            req = urllib.request.Request(
+                f"http://localhost:{port}/v1/chat/completions",
+                data=body,
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                for raw in resp:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                        delta = chunk["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            if self._t_first2 is None:
+                                self._t_first2 = time.time()
+                            self._buf2.append(delta)
+                            self._tok_count2 += 1
+                    except Exception:
+                        pass
+        except Exception as e:
+            self._buf2.append(f"\n\n[Error: {e}]")
+        finally:
+            self._streaming2 = False
 
 
 def _make_test_prompt_window(app) -> NSWindow:
     """Build and return the Quick Test Prompt NSWindow (non-modal)."""
-    W, H = 580, 440
+    W, H = 760, 480
     BOT = 48
     win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
@@ -334,10 +457,19 @@ def _make_test_prompt_window(app) -> NSWindow:
     handler._buf = []
     handler._t0 = 0.0
     handler._tok_count = 0
+    handler._t_first = None
+    handler._ttft_shown = False
     handler._drain_timer = None
+    # Compare mode state
+    handler._buf2 = []
+    handler._streaming2 = False
+    handler._tok_count2 = 0
+    handler._t_first2 = None
+    handler._ttft_shown2 = False
     win._handler = handler   # keep handler alive with window
 
     INPUT_H = 28
+    ROW2_Y = H - _PAD - INPUT_H - _GAP - INPUT_H  # y for second row
     cv.addSubview_(_lbl("Prompt:", ((_PAD, H - _PAD - INPUT_H), (_LW, INPUT_H)),
                         right=False))
     input_fld = NSTextField.alloc().initWithFrame_(
@@ -351,14 +483,57 @@ def _make_test_prompt_window(app) -> NSWindow:
                     ((W - _PAD - 64, H - _PAD - INPUT_H), (64, INPUT_H)), "\r")
     cv.addSubview_(send_btn)
 
+    # Compare checkbox
+    compare_chk = NSButton.alloc().initWithFrame_(
+        ((_PAD, ROW2_Y), (140, INPUT_H)))
+    compare_chk.setButtonType_(3)
+    compare_chk.setTitle_("Compare models")
+    compare_chk.setState_(0)
+    compare_chk.setTarget_(handler)
+    compare_chk.setAction_("compareChanged:")
+    cv.addSubview_(compare_chk)
+    handler._compare_chk = compare_chk
+
+    # Model2 label + popup (hidden by default)
+    model2_lbl = _lbl("Model 2:", ((_PAD + 145, ROW2_Y), (70, INPUT_H)), right=False)
+    model2_lbl.setHidden_(True)
+    cv.addSubview_(model2_lbl)
+    handler._model2_lbl = model2_lbl
+
+    all_models = sorted(app._model_map.keys()) if hasattr(app, '_model_map') else []
+    model2_popup = NSPopUpButton.alloc().initWithFrame_(
+        ((_PAD + 145 + 75, ROW2_Y - 2), (W - _PAD*2 - 145 - 75 - 70, INPUT_H + 4)))
+    for m in (all_models or ["(no models)"]):
+        model2_popup.addItemWithTitle_(m)
+    model2_popup.setHidden_(True)
+    cv.addSubview_(model2_popup)
+    handler._model2_popup = model2_popup
+
+    # Output scroll area — left panel (always visible)
+    output_top = ROW2_Y - _GAP
+    output_h = output_top - BOT
+    half_w = (W - _PAD*2 - _GAP) // 2
     scroll = NSScrollView.alloc().initWithFrame_(
-        ((_PAD, BOT), (W - _PAD*2, H - _PAD*2 - INPUT_H - 8 - BOT)))
+        ((_PAD, BOT), (half_w, output_h)))
     scroll.setHasVerticalScroller_(True); scroll.setAutohidesScrollers_(True)
-    tv = NSTextView.alloc().initWithFrame_(((0, 0), (W - _PAD*2, 300)))
+    tv = NSTextView.alloc().initWithFrame_(((0, 0), (half_w, output_h)))
     tv.setFont_(NSFont.userFixedPitchFontOfSize_(12))
     tv.setEditable_(False)
     scroll.setDocumentView_(tv); cv.addSubview_(scroll)
     handler._output_tv = tv
+
+    # Right panel for compare (hidden by default)
+    scroll2 = NSScrollView.alloc().initWithFrame_(
+        ((_PAD + half_w + _GAP, BOT), (half_w, output_h)))
+    scroll2.setHasVerticalScroller_(True); scroll2.setAutohidesScrollers_(True)
+    tv2 = NSTextView.alloc().initWithFrame_(((0, 0), (half_w, output_h)))
+    tv2.setFont_(NSFont.userFixedPitchFontOfSize_(12))
+    tv2.setEditable_(False)
+    scroll2.setDocumentView_(tv2)
+    scroll2.setHidden_(True)
+    cv.addSubview_(scroll2)
+    handler._output_tv2 = tv2
+    handler._scroll2 = scroll2
 
     tps_lbl = NSTextField.alloc().initWithFrame_(
         ((_PAD, 12), (W - _PAD*2 - 70, 22)))
@@ -1629,6 +1804,8 @@ def run_bench_history_panel() -> None:
                         ((W // 2 - 33, _BTN_BOT), (66, _BTN_H)), "\r"))
     cv.addSubview_(_btn("Clear History", handler, "clearHistory:",
                         ((_PAD, _BTN_BOT), (100, _BTN_H))))
+    cv.addSubview_(_btn("Export CSV…", handler, "exportCSV:",
+                        ((_PAD + 108, _BTN_BOT), (96, _BTN_H))))
     handler._history_wv = wv
     NSApp.activateIgnoringOtherApps_(True)
     panel.makeKeyAndOrderFront_(None)
@@ -1750,6 +1927,7 @@ DEFAULTS = {
     "model_notes":    {},         # {model_name: note_string}
     "model_params":   {},         # {model_name: {context, gpu_layers, max_tokens}}
     "hidden_models":  [],         # [model_name, ...]
+    "recent_models":  [],         # [model_name, ...] max 5, most recent first
     # Feature flags
     "sync_cursor":    False,      # sync Cursor MCP config on model switch
     "sync_continue":  False,      # sync Continue.dev config on model switch
@@ -1768,6 +1946,8 @@ def load_config() -> dict:
                     cfg[key] = {}
             if not isinstance(cfg.get("hidden_models"), list):
                 cfg["hidden_models"] = []
+            if not isinstance(cfg.get("recent_models"), list):
+                cfg["recent_models"] = []
             return cfg
         except Exception:
             pass
@@ -2305,6 +2485,12 @@ class ModelSwitcher(rumps.App):
         self._rebuild_pending = False   # set from bg thread; polled by idle timer
         # Feature: memory pressure
         self._mem_pressure: str = "nominal"
+        # Feature: error dialog
+        self._pending_error: tuple | None = None
+        # Feature: server crash watchdog
+        self._watchdog_timer: rumps.Timer | None = None
+        # Feature: loading step detail
+        self._load_status: str = "Loading model…"
 
         self._build_menu()
         self._prime_meta_cache()   # sets _rebuild_pending when done
@@ -2316,6 +2502,74 @@ class ModelSwitcher(rumps.App):
         # cannot create timers themselves (rumps.Timer from bg thread = no-op).
         self._idle_timer = rumps.Timer(self._on_idle_tick, 1)
         self._idle_timer.start()
+        # Global hotkey ⌥Space — open the status bar menu from keyboard
+        threading.Thread(target=self._register_hotkey, daemon=True).start()
+
+    # ── Global hotkey ─────────────────────────────────────────────────────────
+
+    def _register_hotkey(self):
+        """Register ⌥Space as a global hotkey to pop the menu bar icon.
+        Runs in a background thread with its own CFRunLoop.
+        Requires Accessibility permission (System Settings → Privacy → Accessibility).
+        Silently no-ops if Quartz is unavailable or permission is denied."""
+        try:
+            from Quartz import (CGEventTapCreate, CGEventTapEnable,
+                                CFMachPortCreateRunLoopSource, CFRunLoopGetCurrent,
+                                CFRunLoopAddSource, CFRunLoopRun,
+                                kCGSessionEventTap, kCGHeadInsertEventTap,
+                                kCGEventFlagMaskAlternate, kCGEventKeyDown,
+                                CGEventGetIntegerValueField, kCGKeyboardEventKeycode)
+            from CoreFoundation import kCFRunLoopCommonModes
+        except ImportError:
+            return
+
+        SPACE_KEYCODE = 49
+
+        def _callback(proxy, etype, event, refcon):
+            try:
+                flags = event.intValueForField_(kCGEventFlagMaskAlternate) if hasattr(
+                    event, 'intValueForField_') else 0
+                keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+                mods = event.flags() if hasattr(event, 'flags') else 0
+                if keycode == SPACE_KEYCODE and (mods & kCGEventFlagMaskAlternate):
+                    self._open_menu_from_hotkey()
+            except Exception:
+                pass
+            return event
+
+        try:
+            tap = CGEventTapCreate(
+                kCGSessionEventTap,
+                kCGHeadInsertEventTap,
+                0,
+                1 << kCGEventKeyDown,
+                _callback,
+                None,
+            )
+            if tap is None:
+                return  # Accessibility permission not granted
+            src = CFMachPortCreateRunLoopSource(None, tap, 0)
+            loop = CFRunLoopGetCurrent()
+            CFRunLoopAddSource(loop, src, kCFRunLoopCommonModes)
+            CGEventTapEnable(tap, True)
+            CFRunLoopRun()
+        except Exception:
+            pass
+
+    def _open_menu_from_hotkey(self):
+        """Simulate a click on the status bar item to open the menu."""
+        try:
+            from AppKit import NSStatusBar
+            bar = NSStatusBar.systemStatusBar()
+            # rumps stores the status item; trigger via performClick on the button
+            if hasattr(self, '_status_item'):
+                self._status_item.button().performClick_(None)
+            else:
+                # Walk status bar items to find ours by title
+                for item in (bar.statusItemWithLength_(-1),):
+                    pass
+        except Exception:
+            pass
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -2364,6 +2618,17 @@ class ModelSwitcher(rumps.App):
                     labels.append(f"  ctx: {meta['context']:,}")
                 if meta.get("quant"):
                     labels.append(f"  quant: {meta['quant']}")
+                try:
+                    if path.is_dir():
+                        # MLX model — sum all files in directory
+                        size_bytes = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                    else:
+                        size_bytes = path.stat().st_size
+                    size_gb = size_bytes / 1_073_741_824
+                    if size_gb >= 0.1:
+                        labels.append(f"  size: {size_gb:.1f} GB")
+                except Exception:
+                    pass
                 self._model_meta_cache[name] = labels
                 changed = True
             if changed:
@@ -2386,6 +2651,10 @@ class ModelSwitcher(rumps.App):
             if self._start_poll_on_rebuild:
                 self._start_poll_on_rebuild = False
                 self._start_tps_poll()
+        if self._pending_error:
+            title, msg = self._pending_error
+            self._pending_error = None
+            show_error_alert(title, msg)
 
     # ── Memory pressure ───────────────────────────────────────────────────────
 
@@ -2401,11 +2670,57 @@ class ModelSwitcher(rumps.App):
             return
         self._tps_poll_timer = rumps.Timer(self._on_tps_tick, 10)
         self._tps_poll_timer.start()
+        self._start_watchdog()
 
     def _stop_tps_poll(self):
         if self._tps_poll_timer:
             self._tps_poll_timer.stop()
             self._tps_poll_timer = None
+        self._stop_watchdog()
+
+    def _start_watchdog(self):
+        if self._watchdog_timer is not None:
+            return
+        self._watchdog_timer = rumps.Timer(self._on_watchdog_tick, 30)
+        self._watchdog_timer.start()
+
+    def _stop_watchdog(self):
+        if self._watchdog_timer:
+            self._watchdog_timer.stop()
+            self._watchdog_timer = None
+
+    def _on_watchdog_tick(self, _timer):
+        if not self._active or self._loading:
+            return
+        def _check():
+            try:
+                port = self._cfg.get("omlx_port", 8000)
+                api_key = self._cfg.get("omlx_api_key", "")
+                req = urllib.request.Request(
+                    f"http://localhost:{port}/health",
+                    headers={"Authorization": f"Bearer {api_key}"})
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    r.read()
+                # Server is alive — do nothing
+            except Exception:
+                # Server is down
+                self._active = None
+                self._last_toks = None
+                self._stop_tps_poll()
+                self._rebuild_pending = True
+                if self._cfg.get("notifications", True):
+                    try:
+                        content = UNMutableNotificationContent.alloc().init()
+                        content.setTitle_("Model Switcher")
+                        content.setBody_("Inference server stopped unexpectedly")
+                        req2 = UNNotificationRequest.requestWithIdentifier_content_trigger_(
+                            str(uuid.uuid4()), content, None)
+                        def _noop(e): pass
+                        UNUserNotificationCenter.currentNotificationCenter() \
+                            .addNotificationRequest_withCompletionHandler_(req2, _noop)
+                    except Exception:
+                        pass
+        threading.Thread(target=_check, daemon=True).start()
 
     def _on_tps_tick(self, _timer):
         if self._loading or not self._active:
@@ -2456,6 +2771,18 @@ class ModelSwitcher(rumps.App):
             status_text = "No model running"
 
         menu: list = [rumps.MenuItem(status_text, callback=None), None]
+
+        # ── Recent models section ─────────────────────────────────────────────────
+        recent_names = [n for n in self._cfg.get("recent_models", []) if n in self._model_map]
+        if recent_names:
+            menu.append(rumps.MenuItem("── Recent ──", callback=None))
+            for rname in recent_names:
+                ritem = rumps.MenuItem(f"  {self._display(rname)}", callback=self._on_select)
+                ritem._model_name = rname
+                if self._active == rname and not self._loading:
+                    ritem.state = 1
+                menu.append(ritem)
+            menu.append(None)
 
         # ── Profiles section ────────────────��────────────────────────────��────
         profiles = load_profiles()
@@ -2519,6 +2846,10 @@ class ModelSwitcher(rumps.App):
         sel = rumps.MenuItem("▶  Select", callback=self._on_select)
         sel._model_name = name
         parent.add(sel)
+
+        copy_item = rumps.MenuItem("⎘  Copy model ID", callback=self._on_copy_model_id)
+        copy_item._model_name = name
+        parent.add(copy_item)
 
         hide_item = rumps.MenuItem("⊘  Hide", callback=self._on_hide_model)
         hide_item._model_name = name
@@ -2609,7 +2940,7 @@ class ModelSwitcher(rumps.App):
         if self._flash_timer:
             return
         self._flash_state = True
-        self.title = "Benchmarking…" if self._benchmarking else "Loading model…"
+        self.title = "Benchmarking…" if self._benchmarking else self._load_status
         self._flash_timer = rumps.Timer(self._on_flash_tick, 0.8)
         self._flash_timer.start()
 
@@ -2634,10 +2965,18 @@ class ModelSwitcher(rumps.App):
                         f"\nresults panel exception:\n{traceback.format_exc()}\n")
             return
         self._flash_state = not self._flash_state
-        label = "Benchmarking…" if self._benchmarking else "Loading model…"
+        label = "Benchmarking…" if self._benchmarking else self._load_status
         self.title = label if self._flash_state else "⚡"
 
     # ── Model callbacks ───────────────────────────────────────────────────────
+
+    def _update_recent(self, name: str):
+        recent = self._cfg.setdefault("recent_models", [])
+        if name in recent:
+            recent.remove(name)
+        recent.insert(0, name)
+        self._cfg["recent_models"] = recent[:5]
+        save_config(self._cfg)
 
     def _on_select(self, sender: rumps.MenuItem):
         if self._loading:
@@ -2649,6 +2988,7 @@ class ModelSwitcher(rumps.App):
         if entry is None:
             return
         path, kind = entry
+        self._update_recent(name)
         self._active = name
         self._loading = True
         self._update_title()
@@ -2667,13 +3007,19 @@ class ModelSwitcher(rumps.App):
 
     def _switch_mlx(self, name: str):
         """Kill anything on the port, start omlx, trigger model load and wait."""
+        self._load_status = "Stopping engine…"
         self._kill_gguf()
 
         # Kill any stray process on the port (e.g. llama-server from a prior session)
         if not omlx_is_healthy(self._cfg):
+            self._load_status = "Starting oMLX…"
             kill_port(self._cfg["omlx_port"])
             if not omlx_start(self._cfg):
                 self._active = None
+                self._pending_error = (
+                    "Model failed to load",
+                    "oMLX failed to start. Check ~/Library/Logs/model-switcher.log",
+                )
                 self._loading = False
                 self._rebuild_pending = True
                 return
@@ -2688,6 +3034,7 @@ class ModelSwitcher(rumps.App):
         sampling = mlx_sampling_params(p)
 
         # Step 1: trigger load — retry until omlx confirms the right model is responding
+        self._load_status = "Loading weights…"
         deadline = time.time() + 300
         while time.time() < deadline:
             resp = http_post(url, body={
@@ -2704,6 +3051,7 @@ class ModelSwitcher(rumps.App):
         # unified memory. omlx uses a paged SSD cache; the first 1-token completion
         # only pages in enough to start generating. A longer generation touches more
         # of the model so the first opencode prompt doesn't stall.
+        self._load_status = "Warming up…"
         http_post(url, body={
             "model": name,
             "messages": [{"role": "user", "content": "Write a short Python hello world function."}],
@@ -2729,12 +3077,14 @@ class ModelSwitcher(rumps.App):
 
     def _switch_gguf(self, name: str, path: Path):
         """Stop omlx, wait for port, start llama-server."""
+        self._load_status = "Stopping engine…"
         self._kill_gguf()
         omlx_stop(self._cfg)
         # Belt-and-suspenders: kill anything still holding the port
         if not port_is_free(self._cfg["llama_port"]):
             kill_port(self._cfg["llama_port"])
 
+        self._load_status = "Starting llama-server…"
         p = self._params(name)
         self._gguf_proc = subprocess.Popen(
             [
@@ -2750,12 +3100,21 @@ class ModelSwitcher(rumps.App):
         )
 
         # Wait for llama-server to bind, then get its reported model ID
+        self._load_status = "Loading weights…"
         model_id = name
-        if wait_for_port_open(self._cfg["llama_port"], timeout=30):
-            time.sleep(0.5)  # brief settle
-            reported = self._query_llama_model_id()
-            if reported:
-                model_id = reported
+        if not wait_for_port_open(self._cfg["llama_port"], timeout=30):
+            self._active = None
+            self._pending_error = (
+                "Model failed to load",
+                "llama-server failed to start. Check ~/Library/Logs/model-switcher.log",
+            )
+            self._loading = False
+            self._rebuild_pending = True
+            return
+        time.sleep(0.5)  # brief settle
+        reported = self._query_llama_model_id()
+        if reported:
+            model_id = reported
 
         set_opencode_model(
             self._cfg, "omlx", model_id,
@@ -2789,6 +3148,8 @@ class ModelSwitcher(rumps.App):
         omlx_stop(self._cfg)
         self._active = None
         self._loading = False
+        self._stop_tps_poll()
+        self._stop_watchdog()
         self._rebuild_pending = True
 
     def _kill_gguf(self):
@@ -2801,6 +3162,31 @@ class ModelSwitcher(rumps.App):
         self._gguf_proc = None
 
     # ── Startup sync ──────────────────────────────────────────────────────────
+
+    def _detect_active_model(self):
+        """Try to detect which MLX model is currently loaded without switching."""
+        try:
+            port = self._cfg.get("omlx_port", 8000)
+            api_key = self._cfg.get("omlx_api_key", "")
+            if not omlx_is_healthy(self._cfg):
+                return
+            req = urllib.request.Request(
+                f"http://localhost:{port}/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                data = json.loads(r.read())
+            models = data.get("data", [])
+            if not models:
+                return
+            model_id = models[0].get("id", "")
+            for name in self._model_map:
+                if name == model_id or model_id.startswith(name) or name in model_id:
+                    if self._active is None:
+                        self._active = name
+                        self._rebuild_pending = True
+                    return
+        except Exception:
+            pass
 
     def _sync_state(self):
         """On startup reflect what's already running."""
@@ -2827,6 +3213,8 @@ class ModelSwitcher(rumps.App):
                         self._active = name
                         self._rebuild_pending = True
                         break
+        if self._active is None:
+            self._detect_active_model()
 
     # ── Benchmark progress window ─────────────────────────────────────────────
 
@@ -2898,6 +3286,16 @@ class ModelSwitcher(rumps.App):
             self._build_menu()
 
     # ── Hide/unhide callbacks ─────────────────────────────────────────────────
+
+    def _on_copy_model_id(self, sender: rumps.MenuItem):
+        name = getattr(sender, "_model_name", None)
+        if not name:
+            return
+        model_id = f"omlx/{name}"
+        from AppKit import NSPasteboard, NSStringPboardType
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(model_id, NSStringPboardType)
 
     def _on_hide_model(self, sender: rumps.MenuItem):
         name = getattr(sender, "_model_name", None)
