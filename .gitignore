@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Backup files
+*.bak
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Config (contains personal paths and API keys)
+# Uncomment if you don't want to share your config:
+# ~/.config/model-switcher/
+
+# Plan files (internal working docs)
+PLAN_*.md
