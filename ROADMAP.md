@@ -10,6 +10,36 @@ Features planned, in rough priority order. Contributions welcome.
 
 ---
 
+## Visual Polish
+
+### NSVisualEffectView Vibrancy Backgrounds
+Replace the plain gray window backgrounds on all panels (Settings, per-model Settings, Benchmark, Quick Test) with `NSVisualEffectView` using `.sidebar` or `.hudWindow` material. Gives the frosted-glass translucency that native Mac apps use. One `NSVisualEffectView` as the root content view of each panel; existing subviews stay the same.
+
+### Accent-Colored Primary Buttons
+Use `NSColor.controlAccentColor()` on the Save / Run Benchmark / Close buttons to tint them with the user's system accent color. Currently all buttons are identical plain bezel style — the primary action should stand out visually. Set `bezelColor` on the `NSButton`.
+
+### NSBox Section Dividers
+Replace the bold plain-text section headers in panels (Paths, oMLX, Behavior, Sampling, etc.) with `NSBox` title separators (`boxType = NSBoxSeparator` + a label above). Cleaner visual grouping with less visual noise.
+
+### Titlebar Transparency on Panels
+Call `setTitlebarAppearsTransparent_(True)` and `setMovableByWindowBackground_(True)` on settings panels to blend the titlebar into the window body — removes the hard visual break at the top that makes panels look like generic dialogs.
+
+### SF Symbols for Menu Icons
+Replace Unicode emoji (⚙, ⬇, ⏱, ▶, ⊘) with proper SF Symbol images via `NSImage.imageWithSystemSymbolName_accessibilityDescription_()`. SF Symbols render crisply at any size, automatically adapt to dark/light mode, and look consistent with the rest of macOS.
+
+### Colored Status Dot for Active Model
+In the model submenu, show a filled green circle (`NSImage` or a Unicode `●` with `NSColor.systemGreenColor`) next to the active model's name instead of the plain checkmark state. Makes the active model immediately obvious when scanning the menu.
+
+### Dark Mode Support in HTML Panels
+The benchmark history and results panels use hardcoded light-mode colors (`#f5f5f5`, `#1a1a1a`, `#3a5a8a`). Add `@media (prefers-color-scheme: dark)` blocks to all inline CSS so these panels look correct in dark mode. Pass the effective appearance from `NSApp.effectiveAppearance` to inject a `data-theme` attribute on `<html>` as a fallback.
+
+### Quick Test Window Visual Refresh
+- Distinct background tint on the response output area (subtle `NSBox` or `NSVisualEffectView` inset) to visually separate it from the input
+- Thin `NSBox` separator between the input row and the output area
+- Token stats label (`TTFT · tok/s · ctx`) styled with a secondary text color (`NSColor.secondaryLabelColor`) rather than the same color as body text
+
+---
+
 ## Planned Features
 
 ### Token / Memory Cost Estimator
