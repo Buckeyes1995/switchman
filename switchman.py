@@ -118,21 +118,30 @@ class BenchmarkResult:
     error:       str     # non-empty if run failed
 
 
-def _lbl(text: str, frame, bold: bool = False, right: bool = True) -> NSTextField:
-    """Non-editable label."""
-    from AppKit import NSColor
-    f = NSTextField.alloc().initWithFrame_(frame)
-    f.setStringValue_(text)
-    f.setBezeled_(False)
-    f.setDrawsBackground_(False)
-    f.setEditable_(False)
-    f.setSelectable_(False)
-    f.setAlignment_(1 if right else 0)   # 1 = NSRightTextAlignment
+def _lbl(text: str, frame, bold: bool = False, right: bool = True):
+    """Non-editable label. When bold=True returns an NSView with label + separator line."""
+    from AppKit import NSColor, NSBox, NSView
     if bold:
+        (x, y), (w, h) = frame
+        container = NSView.alloc().initWithFrame_(((x, y), (w, h)))
+        f = NSTextField.alloc().initWithFrame_(((0, 2), (w, h)))
+        f.setStringValue_(text)
+        f.setBezeled_(False); f.setDrawsBackground_(False)
+        f.setEditable_(False); f.setSelectable_(False)
+        f.setAlignment_(1 if right else 0)
         f.setFont_(NSFont.boldSystemFontOfSize_(12))
         f.setTextColor_(NSColor.controlAccentColor())
-    else:
-        f.setTextColor_(NSColor.labelColor())
+        sep = NSBox.alloc().initWithFrame_(((0, 0), (w, 2)))
+        sep.setBoxType_(2)  # NSBoxSeparator
+        container.addSubview_(f)
+        container.addSubview_(sep)
+        return container
+    f = NSTextField.alloc().initWithFrame_(frame)
+    f.setStringValue_(text)
+    f.setBezeled_(False); f.setDrawsBackground_(False)
+    f.setEditable_(False); f.setSelectable_(False)
+    f.setAlignment_(1 if right else 0)
+    f.setTextColor_(NSColor.labelColor())
     return f
 
 
@@ -155,6 +164,16 @@ def _btn(title: str, target, action: str, frame,
     if key_eq:
         b.setKeyEquivalent_(key_eq)
     return b
+
+
+def _sf_item(title: str, symbol: str, callback=None) -> "rumps.MenuItem":
+    """Create a rumps MenuItem with an SF Symbol image."""
+    from AppKit import NSImage
+    item = rumps.MenuItem(title, callback=callback)
+    img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, None)
+    if img:
+        item._menuitem.setImage_(img)
+    return item
 
 
 def _menu_header(label: str) -> "rumps.MenuItem":
@@ -314,13 +333,64 @@ class _PanelHandler(NSObject):
                 field.setStringValue_(str(Path(urls[0].path())))
 
 
+_PROMPT_HISTORY_PATH = Path.home() / ".config" / "switchman" / "prompt_history.json"
+_PROMPT_HISTORY_MAX  = 200
+
+
+def _load_prompt_history() -> list[str]:
+    try:
+        return json.loads(_PROMPT_HISTORY_PATH.read_text())
+    except Exception:
+        return []
+
+
+def _save_prompt_history(history: list[str], prompt: str) -> list[str]:
+    history = [p for p in history if p != prompt]   # dedupe
+    history.insert(0, prompt)
+    history = history[:_PROMPT_HISTORY_MAX]
+    try:
+        _PROMPT_HISTORY_PATH.write_text(json.dumps(history, indent=2) + "\n")
+    except Exception:
+        pass
+    return history
+
+
 class _TestPromptHandler(NSObject):
     """Action target for the non-modal Quick Test Prompt window."""
+
+    # ── Prompt history (up/down arrow navigation) ─────────────────────────────
+
+    def control_textView_doCommandBySelector_(self, control, textView, sel):
+        name = sel if isinstance(sel, str) else str(sel)
+        if "moveUp" in name:
+            hist = self._history
+            if not hist:
+                return False
+            if self._history_idx == -1:
+                self._history_saved = self._input_fld.stringValue()
+                self._history_idx = 0
+            elif self._history_idx < len(hist) - 1:
+                self._history_idx += 1
+            self._input_fld.setStringValue_(hist[self._history_idx])
+            return True
+        if "moveDown" in name:
+            if self._history_idx == -1:
+                return False
+            if self._history_idx == 0:
+                self._history_idx = -1
+                self._input_fld.setStringValue_(getattr(self, "_history_saved", ""))
+            else:
+                self._history_idx -= 1
+                self._input_fld.setStringValue_(self._history[self._history_idx])
+            return True
+        return False
 
     def send_(self, _s):
         prompt = self._input_fld.stringValue().strip()
         if not prompt or self._streaming:
             return
+        self._history = _save_prompt_history(self._history, prompt)
+        self._history_idx = -1
         self._output_tv.setString_("")
         self._tps_lbl.setStringValue_("…")
         self._streaming = True
@@ -531,6 +601,10 @@ def _make_test_prompt_window(app) -> NSWindow:
     handler._tok_count2 = 0
     handler._t_first2 = None
     handler._ttft_shown2 = False
+    # Prompt history
+    handler._history = _load_prompt_history()
+    handler._history_idx = -1
+    handler._history_saved = ""
     # handler kept alive by caller storing it alongside the window
 
     INPUT_H = 28
@@ -541,6 +615,7 @@ def _make_test_prompt_window(app) -> NSWindow:
         ((_PAD + _LW + _GAP, H - _PAD - INPUT_H),
          (W - _PAD*2 - _LW - _GAP - 70, INPUT_H)))
     input_fld.setFont_(NSFont.systemFontOfSize_(13))
+    input_fld.setDelegate_(handler)
     cv.addSubview_(input_fld)
     handler._input_fld = input_fld
 
@@ -574,8 +649,15 @@ def _make_test_prompt_window(app) -> NSWindow:
     cv.addSubview_(model2_popup)
     handler._model2_popup = model2_popup
 
+    # Separator between input rows and output area
+    from AppKit import NSBox as _NSBox
+    sep_y = ROW2_Y - _GAP - 6
+    sep = _NSBox.alloc().initWithFrame_(((_PAD, sep_y), (W - _PAD*2, 1)))
+    sep.setBoxType_(2)  # NSBoxSeparator
+    cv.addSubview_(sep)
+
     # Output scroll area — left panel (always visible)
-    output_top = ROW2_Y - _GAP
+    output_top = sep_y - 4
     output_h = output_top - BOT
     half_w = (W - _PAD*2 - _GAP) // 2
     scroll = NSScrollView.alloc().initWithFrame_(
@@ -605,6 +687,8 @@ def _make_test_prompt_window(app) -> NSWindow:
     tps_lbl.setBezeled_(False); tps_lbl.setDrawsBackground_(False)
     tps_lbl.setEditable_(False)
     tps_lbl.setFont_(NSFont.systemFontOfSize_(11))
+    from AppKit import NSColor as _NSColor
+    tps_lbl.setTextColor_(_NSColor.secondaryLabelColor())
     cv.addSubview_(tps_lbl)
     handler._tps_lbl = tps_lbl
 
@@ -1577,8 +1661,8 @@ def _bench_results_html(name: str, results: list[BenchmarkResult], mode: str) ->
       .sub { color: #666; font-size: 11px; margin: 0 0 14px 0; }
       table { border-collapse: collapse; width: 100%; margin-bottom: 14px; }
       th       { padding: 6px 10px; text-align: left; font-size: 12px; color: #fff; }
-      th.th-in  { background: #3a5a8a; }   /* blue — input parameters */
-      th.th-out { background: #2a6a3a; }   /* green — output metrics */
+      th.th-in  { background: #3a5a8a; }
+      th.th-out { background: #2a6a3a; }
       th.num   { text-align: right; }
       td   { padding: 5px 10px; border-bottom: 1px solid #ddd; font-size: 12px; }
       td.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1587,6 +1671,18 @@ def _bench_results_html(name: str, results: list[BenchmarkResult], mode: str) ->
       .best { font-weight: 600; color: #1a6c1a; }
       .note { color: #888; font-size: 11px; margin-top: 10px; }
       .err  { color: #c00; font-size: 12px; margin: 6px 0; }
+      @media (prefers-color-scheme: dark) {
+        body { color: #e8e8e8; background: #1e1e1e; }
+        .sub { color: #999; }
+        th.th-in  { background: #2a4a78; }
+        th.th-out { background: #1a5a2a; }
+        td   { border-bottom-color: #3a3a3a; }
+        tr:nth-child(even) { background: #2a2a2a; }
+        tr:hover { background: #2a3a50; }
+        .best { color: #4a9c4a; }
+        .note { color: #777; }
+        .err  { color: #f55; }
+      }
     </style>
     """
     body = f"<h2>Benchmark — {name}</h2><p class='sub'>{mode}</p>"
@@ -1838,6 +1934,13 @@ def _bench_history_html() -> str:
   th.num,td.num{{text-align:right}}
   td{{padding:4px 8px;border-bottom:1px solid #ddd}}
   tr:nth-child(even){{background:#ececec}}
+  @media(prefers-color-scheme:dark){{
+    body{{color:#e8e8e8;background:#1e1e1e}}
+    canvas{{background:#2a2a2a}}
+    th{{background:#2a4a78}}
+    td{{border-bottom-color:#3a3a3a}}
+    tr:nth-child(even){{background:#2a2a2a}}
+  }}
 </style></head><body>
 <h2>Benchmark History {clear_btn}</h2>
 <canvas id="c"></canvas>
@@ -3083,10 +3186,10 @@ class Switchman(rumps.App):
             menu.append(None)
 
         menu += [
-            rumps.MenuItem("⏹  Stop Engine", callback=self._stop),
-            rumps.MenuItem("↻  Refresh Models", callback=self._refresh),
-            rumps.MenuItem("🔍  Search Models…", callback=self._open_model_search),
-            rumps.MenuItem("⬇  Download from HuggingFace…", callback=self._open_hf_download),
+            _sf_item("Stop Engine",               "stop.circle",            self._stop),
+            _sf_item("Refresh Models",             "arrow.clockwise",        self._refresh),
+            _sf_item("Search Models…",             "magnifyingglass",        self._open_model_search),
+            _sf_item("Download from HuggingFace…", "arrow.down.to.line",     self._open_hf_download),
             None,
             self._build_settings_menu(),
         ]
@@ -3108,7 +3211,15 @@ class Switchman(rumps.App):
         prefix = "★ " if is_default else "  "
         parent = rumps.MenuItem(f"{prefix}{alias or name}")
         if is_active:
-            parent.state = 1
+            from AppKit import (NSAttributedString, NSColor,
+                                NSForegroundColorAttributeName)
+            dot_attrs = {NSForegroundColorAttributeName: NSColor.systemGreenColor()}
+            dot = NSAttributedString.alloc().initWithString_attributes_("● ", dot_attrs)
+            from AppKit import NSMutableAttributedString
+            full = NSMutableAttributedString.alloc().initWithString_(
+                f"{prefix}{alias or name}")
+            full.insertAttributedString_atIndex_(dot, 0)
+            parent._menuitem.setAttributedTitle_(full)
 
         meta = self._get_model_meta(name)
         note = self._cfg["model_notes"].get(name, "")
@@ -3119,42 +3230,43 @@ class Switchman(rumps.App):
         if meta or note:
             parent.add(None)
 
-        sel = rumps.MenuItem("▶  Select", callback=self._on_select)
+        sel = _sf_item("Select", "play.fill", self._on_select)
         sel._model_name = name
         parent.add(sel)
 
-        copy_item = rumps.MenuItem("⎘  Copy model ID", callback=self._on_copy_model_id)
+        copy_item = _sf_item("Copy model ID", "doc.on.doc", self._on_copy_model_id)
         copy_item._model_name = name
         parent.add(copy_item)
 
         is_default = self._cfg.get("default_model") == name
-        default_item = rumps.MenuItem(
-            "★  Default at startup" if not is_default else "★  Default at startup ✓",
-            callback=self._on_set_default)
+        default_item = _sf_item(
+            "Default at startup" if not is_default else "Default at startup ✓",
+            "star.fill" if is_default else "star",
+            self._on_set_default)
         default_item._model_name = name
         parent.add(default_item)
 
-        hide_item = rumps.MenuItem("⊘  Hide", callback=self._on_hide_model)
+        hide_item = _sf_item("Hide", "eye.slash", self._on_hide_model)
         hide_item._model_name = name
         parent.add(hide_item)
 
-        delete_item = rumps.MenuItem("🗑  Delete model…", callback=self._on_delete_model)
+        delete_item = _sf_item("Delete model…", "trash", self._on_delete_model)
         delete_item._model_name = name
         parent.add(delete_item)
         parent.add(None)
 
-        settings_item = rumps.MenuItem("⚙  Settings…", callback=self._open_model_settings)
+        settings_item = _sf_item("Settings…", "gearshape", self._open_model_settings)
         settings_item._model_name = name
         parent.add(settings_item)
 
-        benchmark_item = rumps.MenuItem("⏱  Benchmark…", callback=self._on_benchmark)
+        benchmark_item = _sf_item("Benchmark…", "timer", self._on_benchmark)
         benchmark_item._model_name = name
         parent.add(benchmark_item)
 
         return parent
 
     def _build_settings_menu(self) -> rumps.MenuItem:
-        s = rumps.MenuItem("⚙  Settings")
+        s = _sf_item("Settings", "gearshape")
         # Memory pressure indicator
         dot = {"nominal": "🟢", "warn": "🟡", "critical": "🔴"}.get(
             self._mem_pressure, "⚪")
@@ -3174,8 +3286,7 @@ class Switchman(rumps.App):
     
 
     def _build_hidden_menu(self, hidden_present: set) -> rumps.MenuItem:
-        label = f"⊘  Hidden ({len(hidden_present)})"
-        s = rumps.MenuItem(label)
+        s = _sf_item(f"Hidden ({len(hidden_present)})", "eye.slash")
         for name in sorted(hidden_present):
             display = self._display(name)
             item = rumps.MenuItem(f"  {display}", callback=self._on_unhide_model)
