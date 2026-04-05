@@ -163,13 +163,21 @@ All sync options default to off. Enable in **⚙ Settings → Open Settings…**
 
 ---
 
+## Model Visibility Manager
+
+**⚙ Settings → Manage Visible Models…** opens a checklist of all discovered models. Check to show in the menu, uncheck to hide. **Select All** and **Clear All** buttons let you reset the list in one click.
+
+**New model detection:** when you click **↻ Refresh Models** and a new model directory is found that wasn't previously seen, Switchman prompts: *"New model found — add to menu?"* Choose **Add to Menu** or **Hide for Now**.
+
+---
+
 ## Other Features
 
 | Feature | How |
 |---|---|
 | **Model deletion** | Hover model → **🗑 Delete model…** — confirms, then deletes from disk |
 | **Copy model ID** | Hover model → **⎘ Copy model ID** → copies `omlx/ModelName` |
-| **Hide / unhide** | Hover model → **⊘ Hide** / restore from **⊘ Hidden** at bottom of menu |
+| **Hide / unhide** | Hover model → **⊘ Hide** / restore from **⊘ Hidden** at bottom of menu; or use **Manage Visible Models…** for a full checklist |
 | **Model aliases** | Hover model → **⚙ Settings…** → Alias field |
 | **Model notes** | Hover model → **⚙ Settings…** → Note field (shown as 📝 in menu) |
 | **Recent models** | Last 5 selections pinned to top of menu |

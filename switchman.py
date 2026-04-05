@@ -1974,6 +1974,7 @@ DEFAULTS = {
     "model_notes":    {},         # {model_name: note_string}
     "model_params":   {},         # {model_name: {context, gpu_layers, max_tokens}}
     "hidden_models":  [],         # [model_name, ...]
+    "known_models":   [],         # [model_name, ...] all models ever seen (for new-model detection)
     "recent_models":  [],         # [model_name, ...] max 5, most recent first
     "default_model":  "",         # model name to auto-load on startup (empty = none)
     # Feature flags
@@ -1994,6 +1995,8 @@ def load_config() -> dict:
                     cfg[key] = {}
             if not isinstance(cfg.get("hidden_models"), list):
                 cfg["hidden_models"] = []
+            if not isinstance(cfg.get("known_models"), list):
+                cfg["known_models"] = []
             if not isinstance(cfg.get("recent_models"), list):
                 cfg["recent_models"] = []
             return cfg
@@ -2759,6 +2762,7 @@ class Switchman(rumps.App):
         self._switch_token: int = 0
 
         self._build_menu()
+        self._init_known_models()  # seed known_models on first run (no prompts)
         self._prime_meta_cache()   # sets _rebuild_pending when done
         threading.Thread(target=self._sync_state, daemon=True).start()
         self._notif_permission_requested = False
@@ -3165,6 +3169,7 @@ class Switchman(rumps.App):
         s.add(None)
         s.add(rumps.MenuItem("  Open Settings…", callback=self._open_settings))
         s.add(rumps.MenuItem("  Manage Profiles…", callback=self._open_profiles))
+        s.add(rumps.MenuItem("  Manage Visible Models…", callback=self._open_manage_models))
         s.add(None)
         s.add(rumps.MenuItem("  Quick Test Prompt…", callback=self._open_test_prompt))
         s.add(rumps.MenuItem("  Benchmark History…", callback=self._open_bench_history))
@@ -3293,6 +3298,7 @@ class Switchman(rumps.App):
 
     def _refresh(self, _):
         self._build_menu()
+        self._check_new_models()
 
     # ── Engine switching ──────────────────────────────────────────────────────
 
@@ -3792,6 +3798,134 @@ class Switchman(rumps.App):
             save_config(self._cfg)
         self._build_menu()
 
+    # ── Model visibility management ───────────────────────────────────────────
+
+    def _init_known_models(self):
+        """Seed known_models on startup without prompting the user."""
+        known = set(self._cfg.get("known_models", []))
+        current = set(self._model_map.keys())
+        updated = known | current
+        if updated != known:
+            self._cfg["known_models"] = sorted(updated)
+            save_config(self._cfg)
+
+    def _check_new_models(self):
+        """After a manual refresh, prompt for any newly discovered models."""
+        known = set(self._cfg.get("known_models", []))
+        current = set(self._model_map.keys())
+        new_models = current - known
+        # Mark all current models as known regardless of user choice
+        self._cfg["known_models"] = sorted(known | current)
+        save_config(self._cfg)
+        if not new_models:
+            return
+        hidden = self._cfg["hidden_models"]
+        changed = False
+        for name in sorted(new_models):
+            kind = self._model_map[name][1].upper()
+            display = self._alias(name) or name
+            resp = rumps.alert(
+                title="New Model Found",
+                message=f"[{kind}]  {display}\n\nAdd this model to the menu?",
+                ok="Add to Menu",
+                cancel="Hide for Now",
+            )
+            if resp != 1:  # user chose "Hide for Now"
+                if name not in hidden:
+                    hidden.append(name)
+                    changed = True
+        if changed:
+            save_config(self._cfg)
+            self._build_menu()
+
+    def _open_manage_models(self, _=None):
+        """Open a checklist panel to show/hide models and clear the model list."""
+        from AppKit import (
+            NSWindow, NSScrollView, NSView, NSButton, NSTextField,
+            NSMakeRect, NSColor, NSFont,
+            NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
+            NSBackingStoreBuffered, NSSwitchButton,
+        )
+
+        if getattr(self, "_manage_win", None):
+            try:
+                self._manage_win.makeKeyAndOrderFront_(None)
+                return
+            except Exception:
+                self._manage_win = None
+
+        all_models = sorted(
+            self._model_map.keys(),
+            key=lambda n: _hf_sort_key({"modelId": self._alias(n) or n}),
+        )
+        hidden_set = set(self._cfg["hidden_models"])
+
+        ROW_H = 24
+        W, PADDING = 480, 16
+        inner_h = max(len(all_models) * ROW_H + PADDING * 2, 80)
+        SCROLL_H = min(inner_h, 380)
+        FOOTER_H = 44
+        H = SCROLL_H + FOOTER_H + 36  # scroll + footer + title bar
+
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (W, H)),
+            NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
+            NSBackingStoreBuffered, False,
+        )
+        win.setTitle_("Manage Visible Models")
+        win.setLevel_(3)
+        win.center()
+        cv = win.contentView()
+
+        # ── Scroll area with checkboxes ──────────────────────────────────────
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(PADDING, FOOTER_H + 8, W - 2 * PADDING, SCROLL_H)
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(1)
+
+        inner = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, W - 2 * PADDING - 4, inner_h)
+        )
+
+        self._manage_checkboxes = {}
+        y = inner_h - PADDING
+        for name in all_models:
+            y -= ROW_H
+            kind = self._model_map[name][1].upper()
+            label = f"[{kind}]  {self._alias(name) or name}"
+            cb = NSButton.alloc().initWithFrame_(
+                NSMakeRect(6, y, W - 2 * PADDING - 20, ROW_H)
+            )
+            cb.setButtonType_(NSSwitchButton)
+            cb.setTitle_(label)
+            cb.setState_(0 if name in hidden_set else 1)
+            inner.addSubview_(cb)
+            self._manage_checkboxes[name] = cb
+
+        scroll.setDocumentView_(inner)
+        cv.addSubview_(scroll)
+
+        # ── Footer buttons ────────────────────────────────────────────────────
+        handler = _ManageModelsHandler.alloc().initWithApp_(self)
+        self._manage_handler = handler  # keep strong ref
+
+        for (label, action, x, w) in [
+            ("Select All",  "selectAll:",   PADDING,           84),
+            ("Clear All",   "clearAll:",    PADDING + 94,      84),
+            ("Save",        "save:",        W - PADDING - 84,  84),
+            ("Cancel",      "cancel:",      W - PADDING - 176, 84),
+        ]:
+            btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 8, w, 28))
+            btn.setTitle_(label)
+            btn.setBezelStyle_(1)
+            btn.setTarget_(handler)
+            btn.setAction_(action)
+            cv.addSubview_(btn)
+
+        self._manage_win = win
+        win.makeKeyAndOrderFront_(None)
+
 
 # ── HuggingFace download ──────────────────────────────────────────────────────
 
@@ -4243,6 +4377,42 @@ class _HFWindowDelegate(NSObject):
     def windowWillClose_(self, note):
         self._app._hf_download_win = None
         self._app._hf_download_handler = None
+
+
+class _ManageModelsHandler(NSObject):
+    """Action target for the Manage Visible Models panel."""
+
+    def initWithApp_(self, app):
+        self = objc.super(_ManageModelsHandler, self).init()
+        self._app = app
+        return self
+
+    def selectAll_(self, _s):
+        for cb in self._app._manage_checkboxes.values():
+            cb.setState_(1)
+
+    def clearAll_(self, _s):
+        for cb in self._app._manage_checkboxes.values():
+            cb.setState_(0)
+
+    def save_(self, _s):
+        app = self._app
+        hidden = []
+        for name, cb in app._manage_checkboxes.items():
+            if cb.state() == 0:
+                hidden.append(name)
+        app._cfg["hidden_models"] = hidden
+        save_config(app._cfg)
+        app._build_menu()
+        if app._manage_win:
+            app._manage_win.orderOut_(None)
+            app._manage_win = None
+
+    def cancel_(self, _s):
+        app = self._app
+        if app._manage_win:
+            app._manage_win.orderOut_(None)
+            app._manage_win = None
 
 
 def _make_hf_download_window(app):

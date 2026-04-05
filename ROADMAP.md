@@ -6,8 +6,7 @@ Features planned, in rough priority order. Contributions welcome.
 
 ## In Progress / Next Up
 
-### Model Visibility Manager
-Allow users to explicitly control which models appear in the menu. On first run (or via Settings), present a checklist of all discovered models — check to include, uncheck to hide. When Switchman detects a new model directory on refresh, prompt the user: *"New model found: X — add to menu?"* Replaces the current hide-only flow.
+*Nothing currently in progress — see Planned Features below.*
 
 ---
 
