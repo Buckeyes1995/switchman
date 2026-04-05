@@ -19,7 +19,8 @@ try:
     from AppKit import (
         NSApp, NSBackingStoreBuffered, NSBox, NSButton, NSFont,
         NSModalResponseOK, NSOpenPanel, NSPanel, NSPopUpButton,
-        NSScrollView, NSTextField, NSTextView, NSURL, NSView, NSWindow,
+        NSScrollView, NSTextField, NSTextView, NSURL, NSView, NSVisualEffectView,
+        NSWindow,
     )
     from Foundation import NSObject
     from WebKit import WKWebView, WKWebViewConfiguration
@@ -159,6 +160,17 @@ def _primary_btn(title: str, target, action: str, frame,
     b = _btn(title, target, action, frame, key_eq)
     b.setBezelColor_(NSColor.controlAccentColor())
     return b
+
+
+def _vibrancy_content_view(window) -> NSVisualEffectView:
+    """Replace the window's plain content view with a vibrant NSVisualEffectView.
+    Returns the view so callers can use it as `cv` and add subviews normally."""
+    vfx = NSVisualEffectView.alloc().initWithFrame_(window.contentView().frame())
+    vfx.setMaterial_(12)   # NSVisualEffectMaterialWindowBackground
+    vfx.setBlendingMode_(0)  # NSVisualEffectBlendingModeBehindWindow
+    vfx.setState_(1)  # NSVisualEffectStateActive
+    window.setContentView_(vfx)
+    return vfx
 
 
 def _browse_btn(target, field: NSTextField,
@@ -479,7 +491,7 @@ def _make_test_prompt_window(app) -> NSWindow:
     win.center()
     win.setTitlebarAppearsTransparent_(True)
     win.setMovableByWindowBackground_(True)
-    cv = win.contentView()
+    cv = _vibrancy_content_view(win)
 
     handler = _TestPromptHandler.alloc().init()
     handler._app_ref = app
@@ -609,7 +621,7 @@ def run_settings_panel(cfg: dict) -> bool:
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
-    cv = panel.contentView()
+    cv = _vibrancy_content_view(panel)
     fields: dict[str, NSTextField] = {}
     cur = _PAD  # pixels from top, advances downward
 
@@ -740,7 +752,7 @@ def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
-    cv = panel.contentView()
+    cv = _vibrancy_content_view(panel)
 
     p = model_params(cfg, name)
     cur = _PAD
@@ -929,7 +941,7 @@ def run_edit_prompts_panel() -> None:
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
-    cv = panel.contentView()
+    cv = _vibrancy_content_view(panel)
 
     # ── Outer scroll view ──
     outer_scroll = NSScrollView.alloc().initWithFrame_(((0, BOTTOM), (W, H - BOTTOM)))
@@ -1060,7 +1072,7 @@ def run_benchmark_config_panel(name: str, kind: str, cfg: dict) -> BenchmarkConf
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
-    cv = panel.contentView()
+    cv = _vibrancy_content_view(panel)
 
     x_lbl = _PAD
     x_fld = _PAD + _LW + _GAP
@@ -1699,7 +1711,7 @@ def run_benchmark_results_panel(name: str, results: list[BenchmarkResult],
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
-    cv = panel.contentView()
+    cv = _vibrancy_content_view(panel)
 
     web_rect = ((_PAD, _BTN_BOT + _BTN_H + _PAD),
                 (W - 2 * _PAD, H - _PAD - (_BTN_BOT + _BTN_H + _PAD) - _PAD))
@@ -1835,7 +1847,7 @@ def run_bench_history_panel() -> None:
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
-    cv = panel.contentView()
+    cv = _vibrancy_content_view(panel)
     web_h = H - _BTN_BOT - _BTN_H - _PAD * 2
     wv = WKWebView.alloc().initWithFrame_configuration_(
         ((_PAD, _BTN_BOT + _BTN_H + _PAD), (W - _PAD * 2, web_h)),
@@ -1913,7 +1925,7 @@ def run_create_profile_panel(all_models: list[str],
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
-    cv = panel.contentView()
+    cv = _vibrancy_content_view(panel)
 
     def fy(t, h=_RH): return H - t - h
     def _popup(opts, frame):
@@ -2579,7 +2591,7 @@ def _open_model_search(app) -> None:
     panel.setLevel_(8)  # NSFloatingWindowLevel
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
-    cv = panel.contentView()
+    cv = _vibrancy_content_view(panel)
 
     y = H - _PAD
 
@@ -3467,7 +3479,7 @@ class Switchman(rumps.App):
         win.center()
         win.setTitlebarAppearsTransparent_(True)
         win.setMovableByWindowBackground_(True)
-        cv = win.contentView()
+        cv = _vibrancy_content_view(win)
 
         tf = NSTextField.alloc().initWithFrame_(
             ((_PAD, _PAD), (W - 2 * _PAD, H - 2 * _PAD)))
@@ -3873,7 +3885,7 @@ class Switchman(rumps.App):
         win.center()
         win.setTitlebarAppearsTransparent_(True)
         win.setMovableByWindowBackground_(True)
-        cv = win.contentView()
+        cv = _vibrancy_content_view(win)
 
         # ── Scroll area with checkboxes ──────────────────────────────────────
         scroll = NSScrollView.alloc().initWithFrame_(
@@ -4451,7 +4463,7 @@ def _make_hf_download_window(app):
     win.center()
     win.setTitlebarAppearsTransparent_(True)
     win.setMovableByWindowBackground_(True)
-    cv = win.contentView()
+    cv = _vibrancy_content_view(win)
 
     win_delegate = _HFWindowDelegate.alloc().initWithApp_(app)
     win.setDelegate_(win_delegate)
