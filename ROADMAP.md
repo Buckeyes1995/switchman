@@ -109,7 +109,8 @@ Run a user-defined shell script on model switch events. Enables custom integrati
 - MLX active model detection after restart — oMLX doesn't expose which model is loaded; `_active` is unknown until a selection is made
 - `windowWillClose_` delegate on download window may not always fire when window is force-quit
 - Benchmark list append is not thread-safe (low risk under GIL but not guaranteed)
-- `_active`, `_loading`, `_ctx_used` written from background threads without locks
+- `_active` and `_loading` written from background threads without locks
+- tok/s probe does not update during active long generations — the 8-token test request queues behind the real generation and may time out; stat updates resume on the next poll after the generation completes
 
 ---
 
@@ -120,4 +121,3 @@ Run a user-defined shell script on model switch events. Enables custom integrati
 - Token-per-dollar cost display (for hosted model comparison)
 - Integration with `llm` CLI tool (Simon Willison's)
 - Auto-detect new models dropped into model directories (FSEvents watcher)
-- Dark/light mode aware panel backgrounds

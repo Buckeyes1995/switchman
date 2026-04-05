@@ -64,7 +64,7 @@ Both expose an OpenAI-compatible API at the same port.
 ## File Structure
 
 ```
-switchman.py          Main app (~4,000 lines)
+switchman.py          Main app (~4,600 lines)
 run.sh                Launcher — creates venv on first run
 requirements.txt      Python dependencies
 ROADMAP.md            Planned features and known issues
