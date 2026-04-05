@@ -3051,7 +3051,11 @@ class Switchman(rumps.App):
         menu: list = [rumps.MenuItem(status_text, callback=None), None]
 
         # ── Recent models section ─────────────────────────────────────────────────
-        recent_names = [n for n in self._cfg.get("recent_models", []) if n in self._model_map]
+        default_model = self._cfg.get("default_model")
+        recent_names = [
+            n for n in self._cfg.get("recent_models", [])
+            if n in self._model_map and (n not in hidden or n == default_model)
+        ]
         if recent_names:
             menu.append(rumps.MenuItem("── Recent ──", callback=None))
             for rname in recent_names:
