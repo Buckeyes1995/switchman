@@ -15,7 +15,9 @@ Supports **MLX** models via [oMLX](https://github.com/jmorganca/omlx) (Apple Sil
 
 <!-- screenshots -->
 ![Switchman menu](docs/screenshots/menu.png)
-![Quick Test and benchmark](docs/screenshots/quicktest.png)
+![Quick Test](docs/screenshots/quicktest.png)
+![Benchmark history](docs/screenshots/benchmark_history.png)
+![Settings](docs/screenshots/settings.png)
 
 ---
 
