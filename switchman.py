@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Model Switcher — macOS menu bar app for switching local LLM inference engines."""
+"""Switchman — macOS menu bar app for switching local LLM inference engines."""
 import json
 import os
 import socket
@@ -43,7 +43,7 @@ _BTN_H, _BTN_BOT = 28, 16        # button height, distance from panel bottom
 
 # ── Benchmarking ──────────────────────────────────────────────────────────────
 
-_MS_CONFIG_DIR       = Path.home() / ".config" / "model-switcher"
+_MS_CONFIG_DIR       = Path.home() / ".config" / "switchman"
 BENCHMARK_PROMPTS_PATH = _MS_CONFIG_DIR / "benchmark_prompts.json"
 BENCH_HISTORY_PATH   = _MS_CONFIG_DIR / "bench_history.json"
 PROFILES_PATH        = _MS_CONFIG_DIR / "profiles.json"
@@ -286,6 +286,8 @@ class _TestPromptHandler(NSObject):
         self._tok_count = 0
         self._t_first = None
         self._ttft_shown = False
+        self._prompt_tokens = 0
+        self._ctx_max = 0
         self._drain_timer = rumps.Timer(self.drainTick_, 0.1)
         self._drain_timer.start()
         threading.Thread(target=self._do_stream,
@@ -312,11 +314,14 @@ class _TestPromptHandler(NSObject):
             api_key = cfg.get("omlx_api_key", "")
             model = self._app_ref._active or ""
             p = self._app_ref._model_params(model) if hasattr(self._app_ref, "_model_params") else {}
+            self._prompt_tokens = 0
+            self._ctx_max = (p.get("context", 32768) if p else 32768)
             body = json.dumps({
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": p.get("max_tokens", 512) if p else 512,
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }).encode()
             req = urllib.request.Request(
                 f"http://localhost:{port}/v1/chat/completions",
@@ -334,6 +339,12 @@ class _TestPromptHandler(NSObject):
                         break
                     try:
                         chunk = json.loads(payload)
+                        # Final usage chunk (stream_options: include_usage)
+                        if "usage" in chunk and chunk.get("choices") == []:
+                            usage = chunk["usage"]
+                            self._prompt_tokens = usage.get("prompt_tokens", 0)
+                            self._tok_count = usage.get("completion_tokens", self._tok_count)
+                            continue
                         delta = chunk["choices"][0]["delta"].get("content", "")
                         if delta:
                             if self._t_first is None:
@@ -376,8 +387,15 @@ class _TestPromptHandler(NSObject):
             elif self._ttft_shown and self._t_first is not None:
                 ttft_ms = (self._t_first - self._t0) * 1000
                 ttft_part = f"TTFT {ttft_ms:.0f}ms  |  "
+            ctx_part = ""
+            prompt_toks = getattr(self, '_prompt_tokens', 0)
+            ctx_max = getattr(self, '_ctx_max', 0)
+            if prompt_toks > 0 and ctx_max > 0:
+                used = prompt_toks + self._tok_count
+                pct = used / ctx_max * 100
+                ctx_part = f"  |  ctx {used:,}/{ctx_max:,} ({pct:.0f}%)"
             self._tps_lbl.setStringValue_(
-                f"{ttft_part}{self._tok_count / elapsed:.1f} tok/s  ({self._tok_count} tokens)")
+                f"{ttft_part}{self._tok_count / elapsed:.1f} tok/s  ({self._tok_count} tokens){ctx_part}")
         streaming2 = getattr(self, '_streaming2', False)
         buf2_empty = not getattr(self, '_buf2', [])
         if not self._streaming and not self._buf and not streaming2 and buf2_empty:
@@ -460,13 +478,15 @@ def _make_test_prompt_window(app) -> NSWindow:
     handler._t_first = None
     handler._ttft_shown = False
     handler._drain_timer = None
+    handler._prompt_tokens = 0
+    handler._ctx_max = 0
     # Compare mode state
     handler._buf2 = []
     handler._streaming2 = False
     handler._tok_count2 = 0
     handler._t_first2 = None
     handler._ttft_shown2 = False
-    win._handler = handler   # keep handler alive with window
+    # handler kept alive by caller storing it alongside the window
 
     INPUT_H = 28
     ROW2_Y = H - _PAD - INPUT_H - _GAP - INPUT_H  # y for second row
@@ -545,7 +565,7 @@ def _make_test_prompt_window(app) -> NSWindow:
 
     cv.addSubview_(_btn("Clear", handler, "clear:",
                         ((W - _PAD - 64, 12), (64, 22))))
-    return win
+    return win, handler
 
 
 def run_settings_panel(cfg: dict) -> bool:
@@ -572,7 +592,7 @@ def run_settings_panel(cfg: dict) -> bool:
     panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
     # style mask 3 = NSWindowStyleMaskTitled (1) | NSWindowStyleMaskClosable (2)
-    panel.setTitle_("Model Switcher — Settings")
+    panel.setTitle_("Switchman — Settings")
     panel.setDelegate_(handler)
     panel.center()
     cv = panel.contentView()
@@ -1887,7 +1907,7 @@ def run_create_profile_panel(all_models: list[str],
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-CONFIG_PATH = Path.home() / ".config" / "model-switcher" / "config.json"
+CONFIG_PATH = Path.home() / ".config" / "switchman" / "config.json"
 
 # Default per-model params (overridable per model in cfg["model_params"])
 DEFAULT_MODEL_PARAMS = {
@@ -1928,10 +1948,11 @@ DEFAULTS = {
     "model_params":   {},         # {model_name: {context, gpu_layers, max_tokens}}
     "hidden_models":  [],         # [model_name, ...]
     "recent_models":  [],         # [model_name, ...] max 5, most recent first
+    "default_model":  "",         # model name to auto-load on startup (empty = none)
     # Feature flags
     "sync_cursor":    False,      # sync Cursor MCP config on model switch
     "sync_continue":  False,      # sync Continue.dev config on model switch
-    "sync_env":       True,       # write ~/.config/model-switcher/env on switch
+    "sync_env":       True,       # write ~/.config/switchman/env on switch
     "notifications":  True,       # macOS notification when model is ready
 }
 
@@ -2230,7 +2251,7 @@ def send_model_ready_notification(name: str) -> None:
         return
     try:
         content = UNMutableNotificationContent.alloc().init()
-        content.setTitle_("Model Switcher")
+        content.setTitle_("Switchman")
         content.setBody_(f"Model ready: {name}")
         req = UNNotificationRequest.requestWithIdentifier_content_trigger_(
             str(uuid.uuid4()), content, None)
@@ -2317,7 +2338,7 @@ def sync_continue_config(port: int) -> None:
 
 
 def sync_env_file(port: int) -> None:
-    """Write LLM_BASE_URL to ~/.config/model-switcher/env for shell sourcing."""
+    """Write LLM_BASE_URL to ~/.config/switchman/env for shell sourcing."""
     try:
         _MS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         (_MS_CONFIG_DIR / "env").write_text(
@@ -2458,7 +2479,7 @@ end tell"""
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-class ModelSwitcher(rumps.App):
+class Switchman(rumps.App):
     def __init__(self):
         super().__init__("⚡", quit_button=None)
         self._cfg = load_config()
@@ -2474,12 +2495,17 @@ class ModelSwitcher(rumps.App):
         self._bench_progress_win = None          # NSWindow ref
         self._bench_progress_field = None        # NSTextField ref
         self._bench_progress_timer: rumps.Timer | None = None
-        # Feature: live tok/s
+        # Feature: live tok/s + context usage
         self._last_toks: float | None = None
+        self._ctx_used: int | None = None   # prompt+completion tokens from last poll
+        self._ctx_max: int | None = None    # context window for active model
         self._tps_poll_timer: rumps.Timer | None = None
         self._start_poll_on_rebuild = False
         # Feature: test prompt
         self._test_prompt_win = None
+        self._test_prompt_handler = None
+        self._hf_download_win = None
+        self._hf_download_handler = None
         # Feature: model metadata cache
         self._model_meta_cache: dict[str, list[str]] = {}
         self._rebuild_pending = False   # set from bg thread; polled by idle timer
@@ -2491,6 +2517,9 @@ class ModelSwitcher(rumps.App):
         self._watchdog_timer: rumps.Timer | None = None
         # Feature: loading step detail
         self._load_status: str = "Loading model…"
+        # Switch token — incremented on every new selection; threads check it
+        # to detect supersession and exit without clobbering _active/_loading.
+        self._switch_token: int = 0
 
         self._build_menu()
         self._prime_meta_cache()   # sets _rebuild_pending when done
@@ -2711,7 +2740,7 @@ class ModelSwitcher(rumps.App):
                 if self._cfg.get("notifications", True):
                     try:
                         content = UNMutableNotificationContent.alloc().init()
-                        content.setTitle_("Model Switcher")
+                        content.setTitle_("Switchman")
                         content.setBody_("Inference server stopped unexpectedly")
                         req2 = UNNotificationRequest.requestWithIdentifier_content_trigger_(
                             str(uuid.uuid4()), content, None)
@@ -2739,9 +2768,15 @@ class ModelSwitcher(rumps.App):
                              body, headers, timeout=20)
             if resp and "usage" in resp:
                 elapsed = time.time() - t0
-                toks = resp["usage"].get("completion_tokens", 0)
+                usage = resp["usage"]
+                toks = usage.get("completion_tokens", 0)
                 if elapsed > 0 and toks > 0:
                     self._last_toks = toks / elapsed
+                prompt_toks = usage.get("prompt_tokens", 0)
+                if prompt_toks > 0:
+                    self._ctx_used = prompt_toks + toks
+                    p = model_params(self._cfg, name)
+                    self._ctx_max = p.get("context", 32768)
             self._rebuild_pending = True
         threading.Thread(target=_poll, daemon=True).start()
 
@@ -2813,6 +2848,7 @@ class ModelSwitcher(rumps.App):
         menu += [
             rumps.MenuItem("⏹  Stop Engine", callback=self._stop),
             rumps.MenuItem("↻  Refresh Models", callback=self._refresh),
+            rumps.MenuItem("⬇  Download from HuggingFace…", callback=self._open_hf_download),
             None,
             self._build_settings_menu(),
         ]
@@ -2829,8 +2865,10 @@ class ModelSwitcher(rumps.App):
     def _make_model_item(self, name: str) -> rumps.MenuItem:
         alias = self._alias(name)
         is_active = self._active == name and not self._loading
+        is_default = self._cfg.get("default_model") == name
 
-        parent = rumps.MenuItem(f"  {alias or name}")
+        prefix = "★ " if is_default else "  "
+        parent = rumps.MenuItem(f"{prefix}{alias or name}")
         if is_active:
             parent.state = 1
 
@@ -2850,6 +2888,13 @@ class ModelSwitcher(rumps.App):
         copy_item = rumps.MenuItem("⎘  Copy model ID", callback=self._on_copy_model_id)
         copy_item._model_name = name
         parent.add(copy_item)
+
+        is_default = self._cfg.get("default_model") == name
+        default_item = rumps.MenuItem(
+            "★  Default at startup" if not is_default else "★  Default at startup ✓",
+            callback=self._on_set_default)
+        default_item._model_name = name
+        parent.add(default_item)
 
         hide_item = rumps.MenuItem("⊘  Hide", callback=self._on_hide_model)
         hide_item._model_name = name
@@ -2929,10 +2974,14 @@ class ModelSwitcher(rumps.App):
             self._stop_flash()
             mem_dot = "🔴" if self._mem_pressure == "critical" else ""
             if self._active:
+                ctx_part = ""
+                if self._ctx_used and self._ctx_max:
+                    pct = int(self._ctx_used / self._ctx_max * 100)
+                    ctx_part = f" {pct}%ctx"
                 if self._last_toks is not None:
-                    self.title = f"⚡{mem_dot} {int(self._last_toks)} t/s"
+                    self.title = f"⚡{mem_dot} {int(self._last_toks)} t/s{ctx_part}"
                 else:
-                    self.title = f"⚡{mem_dot} {self._title_label(self._active)}"
+                    self.title = f"⚡{mem_dot} {self._title_label(self._active)}{ctx_part}"
             else:
                 self.title = f"⚡{mem_dot}"
 
@@ -2979,9 +3028,9 @@ class ModelSwitcher(rumps.App):
         save_config(self._cfg)
 
     def _on_select(self, sender: rumps.MenuItem):
-        if self._loading:
-            return
         self._last_toks = None
+        self._ctx_used = None
+        self._ctx_max = None
         self._stop_tps_poll()
         name = getattr(sender, "_model_name", None) or sender.title.strip()
         entry = self._model_map.get(name)
@@ -2989,13 +3038,16 @@ class ModelSwitcher(rumps.App):
             return
         path, kind = entry
         self._update_recent(name)
+        # Increment token — any in-progress load will see it changed and abort
+        self._switch_token += 1
+        token = self._switch_token
         self._active = name
         self._loading = True
         self._update_title()
         if kind == "mlx":
-            threading.Thread(target=self._switch_mlx, args=(name,), daemon=True).start()
+            threading.Thread(target=self._switch_mlx, args=(name, token), daemon=True).start()
         else:
-            threading.Thread(target=self._switch_gguf, args=(name, path), daemon=True).start()
+            threading.Thread(target=self._switch_gguf, args=(name, path, token), daemon=True).start()
 
     def _stop(self, _=None):
         threading.Thread(target=self._do_stop, daemon=True).start()
@@ -3005,38 +3057,43 @@ class ModelSwitcher(rumps.App):
 
     # ── Engine switching ──────────────────────────────────────────────────────
 
-    def _switch_mlx(self, name: str):
+    def _superseded(self, token: int) -> bool:
+        """Return True if a newer switch request has come in since this thread started."""
+        return self._switch_token != token
+
+    def _switch_mlx(self, name: str, token: int):
         """Kill anything on the port, start omlx, trigger model load and wait."""
         self._load_status = "Stopping engine…"
         self._kill_gguf()
+        if self._superseded(token): return
 
-        # Kill any stray process on the port (e.g. llama-server from a prior session)
         if not omlx_is_healthy(self._cfg):
             self._load_status = "Starting oMLX…"
             kill_port(self._cfg["omlx_port"])
             if not omlx_start(self._cfg):
+                if self._superseded(token): return
                 self._active = None
                 self._pending_error = (
                     "Model failed to load",
-                    "oMLX failed to start. Check ~/Library/Logs/model-switcher.log",
+                    "oMLX failed to start. Check ~/Library/Logs/switchman.log",
                 )
                 self._loading = False
                 self._rebuild_pending = True
                 return
 
+        if self._superseded(token): return
         p = self._params(name)
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._cfg['omlx_api_key']}",
         }
         url = f"http://localhost:{self._cfg['omlx_port']}/v1/chat/completions"
-
         sampling = mlx_sampling_params(p)
 
-        # Step 1: trigger load — retry until omlx confirms the right model is responding
         self._load_status = "Loading weights…"
         deadline = time.time() + 300
         while time.time() < deadline:
+            if self._superseded(token): return
             resp = http_post(url, body={
                 "model": name,
                 "messages": [{"role": "user", "content": "hi"}],
@@ -3047,10 +3104,7 @@ class ModelSwitcher(rumps.App):
                 break
             time.sleep(2)
 
-        # Step 2: warm-up — send a real generation to force SSD-cached weights into
-        # unified memory. omlx uses a paged SSD cache; the first 1-token completion
-        # only pages in enough to start generating. A longer generation touches more
-        # of the model so the first opencode prompt doesn't stall.
+        if self._superseded(token): return
         self._load_status = "Warming up…"
         http_post(url, body={
             "model": name,
@@ -3059,6 +3113,7 @@ class ModelSwitcher(rumps.App):
             **sampling,
         }, headers=headers, timeout=300)
 
+        if self._superseded(token): return
         set_opencode_model(
             self._cfg, "omlx", name,
             display_name=self._display(name),
@@ -3075,15 +3130,17 @@ class ModelSwitcher(rumps.App):
             restart_opencode(self._cfg)
         self._rebuild_pending = True
 
-    def _switch_gguf(self, name: str, path: Path):
+    def _switch_gguf(self, name: str, path: Path, token: int):
         """Stop omlx, wait for port, start llama-server."""
         self._load_status = "Stopping engine…"
         self._kill_gguf()
         omlx_stop(self._cfg)
-        # Belt-and-suspenders: kill anything still holding the port
+        if self._superseded(token): return
+
         if not port_is_free(self._cfg["llama_port"]):
             kill_port(self._cfg["llama_port"])
 
+        if self._superseded(token): return
         self._load_status = "Starting llama-server…"
         p = self._params(name)
         self._gguf_proc = subprocess.Popen(
@@ -3099,19 +3156,20 @@ class ModelSwitcher(rumps.App):
             start_new_session=True,
         )
 
-        # Wait for llama-server to bind, then get its reported model ID
         self._load_status = "Loading weights…"
         model_id = name
         if not wait_for_port_open(self._cfg["llama_port"], timeout=30):
+            if self._superseded(token): return
             self._active = None
             self._pending_error = (
                 "Model failed to load",
-                "llama-server failed to start. Check ~/Library/Logs/model-switcher.log",
+                "llama-server failed to start. Check ~/Library/Logs/switchman.log",
             )
             self._loading = False
             self._rebuild_pending = True
             return
-        time.sleep(0.5)  # brief settle
+        if self._superseded(token): return
+        time.sleep(0.5)
         reported = self._query_llama_model_id()
         if reported:
             model_id = reported
@@ -3163,58 +3221,36 @@ class ModelSwitcher(rumps.App):
 
     # ── Startup sync ──────────────────────────────────────────────────────────
 
-    def _detect_active_model(self):
-        """Try to detect which MLX model is currently loaded without switching."""
-        try:
-            port = self._cfg.get("omlx_port", 8000)
-            api_key = self._cfg.get("omlx_api_key", "")
-            if not omlx_is_healthy(self._cfg):
-                return
-            req = urllib.request.Request(
-                f"http://localhost:{port}/v1/models",
-                headers={"Authorization": f"Bearer {api_key}"})
-            with urllib.request.urlopen(req, timeout=3) as r:
-                data = json.loads(r.read())
-            models = data.get("data", [])
-            if not models:
-                return
-            model_id = models[0].get("id", "")
-            for name in self._model_map:
-                if name == model_id or model_id.startswith(name) or name in model_id:
-                    if self._active is None:
-                        self._active = name
-                        self._rebuild_pending = True
-                    return
-        except Exception:
-            pass
-
     def _sync_state(self):
-        """On startup reflect what's already running."""
-        if omlx_is_healthy(self._cfg):
-            # Ask omlx what it has via the models list
-            try:
-                url = f"http://localhost:{self._cfg['omlx_port']}/v1/models"
-                req = urllib.request.Request(
-                    url, headers={"Authorization": f"Bearer {self._cfg['omlx_api_key']}"}
-                )
-                with urllib.request.urlopen(req, timeout=3) as r:
-                    data = json.loads(r.read())
-                    # omlx lists all discoverable models; we can't tell which is loaded
-                    # without /v1/models/status — just leave active unset at startup
-            except Exception:
-                pass
-        elif not port_is_free(self._cfg["llama_port"]):
-            # llama-server might be running — get its model
+        """On startup: detect GGUF if llama-server is already running, then
+        auto-load the default model if one is configured and nothing is active."""
+        if not port_is_free(self._cfg["llama_port"]) and not omlx_is_healthy(self._cfg):
             model_id = self._query_llama_model_id()
             if model_id:
-                # Match against known gguf display names
                 for name, (_, kind) in self._model_map.items():
                     if kind == "gguf" and (model_id.startswith(name) or name in model_id):
                         self._active = name
                         self._rebuild_pending = True
                         break
-        if self._active is None:
-            self._detect_active_model()
+
+        default = self._cfg.get("default_model", "")
+        if default and default in self._model_map and self._active is None:
+            # Trigger the normal select flow from the background thread
+            entry = self._model_map.get(default)
+            if entry:
+                path, kind = entry
+                self._switch_token += 1
+                token = self._switch_token
+                self._active = default
+                self._loading = True
+                self._load_status = "Loading default model…"
+                self._rebuild_pending = True
+                if kind == "mlx":
+                    threading.Thread(target=self._switch_mlx,
+                                     args=(default, token), daemon=True).start()
+                else:
+                    threading.Thread(target=self._switch_gguf,
+                                     args=(default, path, token), daemon=True).start()
 
     # ── Benchmark progress window ─────────────────────────────────────────────
 
@@ -3297,6 +3333,17 @@ class ModelSwitcher(rumps.App):
         pb.clearContents()
         pb.setString_forType_(model_id, NSStringPboardType)
 
+    def _on_set_default(self, sender: rumps.MenuItem):
+        name = getattr(sender, "_model_name", None)
+        if not name:
+            return
+        if self._cfg.get("default_model") == name:
+            self._cfg["default_model"] = ""   # toggle off
+        else:
+            self._cfg["default_model"] = name
+        save_config(self._cfg)
+        self._build_menu()
+
     def _on_hide_model(self, sender: rumps.MenuItem):
         name = getattr(sender, "_model_name", None)
         if not name:
@@ -3315,6 +3362,18 @@ class ModelSwitcher(rumps.App):
         bconfig = run_benchmark_config_panel(name, kind, self._cfg)
         if bconfig is None:
             return
+
+        # Pre-flight: for API benchmarks the right server must be reachable.
+        # MLX: oMLX lazy-loads models — just needs oMLX healthy (checked in run_api_benchmark).
+        # GGUF: llama-server is single-model — must have this model loaded.
+        if bconfig.mode == "api" and kind == "gguf":
+            if self._gguf_proc is None or self._gguf_proc.poll() is not None:
+                show_error_alert(
+                    "Model not loaded",
+                    f"Select \"{self._display(name)}\" from the menu to load it first, "
+                    f"then run the API benchmark.",
+                )
+                return
 
         entry = self._model_map.get(name)
         path = entry[0] if entry else None
@@ -3372,9 +3431,18 @@ class ModelSwitcher(rumps.App):
             self._test_prompt_win.makeKeyAndOrderFront_(None)
             NSApp.activateIgnoringOtherApps_(True)
         else:
-            self._test_prompt_win = _make_test_prompt_window(self)
+            self._test_prompt_win, self._test_prompt_handler = _make_test_prompt_window(self)
             NSApp.activateIgnoringOtherApps_(True)
             self._test_prompt_win.makeKeyAndOrderFront_(None)
+
+    def _open_hf_download(self, _):
+        if self._hf_download_win is not None:
+            self._hf_download_win.makeKeyAndOrderFront_(None)
+            NSApp.activateIgnoringOtherApps_(True)
+        else:
+            self._hf_download_win, self._hf_download_handler = _make_hf_download_window(self)
+            NSApp.activateIgnoringOtherApps_(True)
+            self._hf_download_win.makeKeyAndOrderFront_(None)
 
     def _open_profiles(self, _):
         all_models = sorted(self._model_map.keys())
@@ -3417,5 +3485,536 @@ class ModelSwitcher(rumps.App):
         self._build_menu()
 
 
+# ── HuggingFace download ──────────────────────────────────────────────────────
+
+def _hf_search(query: str, tag: str, limit: int = 30) -> list[dict]:
+    """Search HuggingFace models API. Returns list of model dicts."""
+    try:
+        import urllib.parse
+        params = urllib.parse.urlencode({
+            "search": query, "filter": tag, "limit": limit,
+            "sort": "downloads", "direction": -1,
+        })
+        req = urllib.request.Request(
+            f"https://huggingface.co/api/models?{params}",
+            headers={"User-Agent": "switchman/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception:
+        return []
+
+
+def _hf_model_size_gb(model_info: dict) -> float:
+    """Extract total size in GB from HF model info, or 0 if unknown."""
+    try:
+        siblings = model_info.get("siblings", [])
+        total = sum(s.get("size", 0) for s in siblings if s.get("size"))
+        return total / 1_073_741_824
+    except Exception:
+        return 0.0
+
+
+def _hf_parse_params(model_id: str) -> float:
+    """Parse parameter count in billions from a model ID string.
+    Returns a float (e.g. 7.0, 70.0, 0.5, 235.0) or 0.0 if not found."""
+    import re
+    # Patterns: 70B, 7b, 0.5B, 235B, 3x8B (MoE total = 24), 8x7B
+    moe = re.search(r'(\d+)[xX](\d+(?:\.\d+)?)[Bb]', model_id)
+    if moe:
+        return float(moe.group(1)) * float(moe.group(2))
+    m = re.search(r'(\d+(?:\.\d+)?)[Bb](?:[^a-zA-Z]|$)', model_id)
+    if m:
+        return float(m.group(1))
+    return 0.0
+
+
+# Quant ordering: higher quality = higher index (sorted ascending = worst first,
+# so we negate for "best quant first" ordering).
+_QUANT_ORDER = {
+    "f32": 10, "f16": 9, "bf16": 9,
+    "8bit": 8, "q8_0": 8, "q8": 8,
+    "6bit": 7, "q6_k": 7, "q6": 7,
+    "5bit": 6, "q5_k_m": 6, "q5_k_s": 6, "q5_0": 5, "q5_1": 5,
+    "4bit": 4, "q4_k_m": 4, "q4_k_s": 4, "q4_0": 3, "q4_1": 3,
+    "iq4_xs": 4, "iq4_nl": 4,
+    "3bit": 2, "q3_k_m": 2, "q3_k_s": 2, "q3_k_l": 2,
+    "2bit": 1, "q2_k": 1,
+}
+
+
+def _hf_parse_quant(model_id: str) -> int:
+    """Return a quant quality score (higher = better). 0 if unknown."""
+    import re
+    lower = model_id.lower()
+    # Try longest match first
+    for key in sorted(_QUANT_ORDER, key=len, reverse=True):
+        if key in lower:
+            return _QUANT_ORDER[key]
+    return 0
+
+
+def _hf_sort_key(model_info: dict):
+    """Sort key: source org, then base model name, then param count asc, then quant desc."""
+    import re
+    model_id = model_info.get("modelId", model_info.get("id", ""))
+    # Split org/model-name
+    if "/" in model_id:
+        org, base = model_id.split("/", 1)
+    else:
+        org, base = "", model_id
+    # Strip quant/bit/format suffixes for clean alphabetic model grouping
+    base_clean = re.sub(
+        r'[-_]?(?:\d+(?:\.\d+)?[Bb]it|[QqIi][Qq]?\d+[_\-]?[A-Za-z0-9]*|[Ff]16|[Ff]32|[Bb][Ff]16|MLX|GGUF|CRACK).*$',
+        '', base, flags=re.IGNORECASE).strip("-_ ")
+    params = _hf_parse_params(model_id)
+    quant = _hf_parse_quant(model_id)
+    return (org.lower(), base_clean.lower(), params, -quant)
+
+
+class _HFDownloadHandler(NSObject):
+    """Action target for the HuggingFace download window."""
+
+    # ── Search ────────────────────────────────────────────────────────────────
+
+    def search_(self, _s):
+        query = self._query_fld.stringValue().strip()
+        tag = "mlx" if self._filter_popup.titleOfSelectedItem() == "MLX" else "gguf"
+        self._info_lbl.setStringValue_("Searching…")
+        self._results = []
+        self._pending_items = None   # set by bg thread, picked up by poll timer
+
+        def _do():
+            models = _hf_search(query, tag)
+            models.sort(key=_hf_sort_key)
+            items = []
+            for m in models:
+                sz = _hf_model_size_gb(m)
+                sz_str = f"  {sz:.1f} GB" if sz >= 0.01 else ""
+                params = _hf_parse_params(m.get("modelId", m.get("id", "")))
+                quant = _hf_parse_quant(m.get("modelId", m.get("id", "")))
+                quant_str = next((k for k, v in _QUANT_ORDER.items()
+                                  if v == quant and quant > 0), "")
+                parts = []
+                if params > 0:
+                    parts.append(f"{params:g}B")
+                if quant_str:
+                    parts.append(quant_str.upper())
+                meta_str = f"  [{', '.join(parts)}]" if parts else ""
+                items.append(f"{m.get('modelId', m.get('id', '?'))}{meta_str}{sz_str}")
+            self._results = models
+            self._pending_items = items   # signal main thread
+
+        threading.Thread(target=_do, daemon=True).start()
+        # Poll for results on the main thread
+        if self._search_poll is not None:
+            self._search_poll.stop()
+        self._search_poll = rumps.Timer(self.pollSearch_, 0.2)
+        self._search_poll.start()
+
+    def pollSearch_(self, timer):
+        if self._pending_items is None:
+            return
+        timer.stop()
+        self._search_poll = None
+        items = self._pending_items
+        self._pending_items = None
+        self._results_popup.removeAllItems()
+        if items:
+            for it in items:
+                self._results_popup.addItemWithTitle_(it)
+            self._results_popup.selectItemAtIndex_(0)
+            self._updateInfo()
+            if getattr(self, '_auto_select_first', False):
+                self._auto_select_first = False
+        else:
+            self._results_popup.addItemWithTitle_("No results")
+            self._info_lbl.setStringValue_("No results found.")
+
+    def filterChanged_(self, _s):
+        tag = self._filter_popup.titleOfSelectedItem()
+        d = self._app_ref._cfg.get(
+            "mlx_dir" if tag == "MLX" else "gguf_dir",
+            str(Path.home() / "models"))
+        self._dest_fld.setStringValue_(d)
+
+    def resultChanged_(self, _s):
+        self._updateInfo()
+
+    def _updateInfo(self):
+        idx = self._results_popup.indexOfSelectedItem()
+        if idx < 0 or idx >= len(self._results):
+            return
+        m = self._results[idx]
+        repo_id = m.get("modelId", m.get("id", ""))
+        downloads = m.get("downloads", 0)
+        likes = m.get("likes", 0)
+        sz = _hf_model_size_gb(m)
+        sz_str = f"{sz:.1f} GB  |  " if sz >= 0.01 else ""
+        self._info_lbl.setStringValue_(
+            f"{sz_str}↓ {downloads:,}  ❤ {likes:,}  —  {repo_id}")
+
+    # ── Download ──────────────────────────────────────────────────────────────
+
+    def download_(self, _s):
+        if self._downloading:
+            return
+        idx = self._results_popup.indexOfSelectedItem()
+        if idx < 0 or idx >= len(self._results):
+            self._status_lbl.setStringValue_("Select a result first.")
+            return
+        m = self._results[idx]
+        repo_id = m.get("modelId", m.get("id", ""))
+        dest_dir = Path(self._dest_fld.stringValue().strip()).expanduser()
+        if not dest_dir.exists():
+            self._status_lbl.setStringValue_(f"Directory not found: {dest_dir}")
+            return
+        model_dir = dest_dir / repo_id.split("/")[-1]
+        # Byte counter updated directly by our tqdm shim on every HTTP chunk.
+        byte_counter = type('_C', (), {'bytes_done': 0})()
+        tqdm_cls = _make_hf_tqdm_class(byte_counter)
+        self._downloading = True
+        self._dl_error = None
+        self._dl_success_path = None
+        self._dl_model_dir = model_dir
+        self._dl_byte_counter = byte_counter
+        self._dl_bytes_total = 0
+        self._dl_size_fetched = False
+        self._dl_prev_done = 0
+        self._dl_prev_time = 0.0
+        self._dl_btn.setEnabled_(False)
+        self._progress.setIndeterminate_(False)
+        self._progress.setMinValue_(0.0)
+        self._progress.setMaxValue_(100.0)
+        self._progress.setDoubleValue_(0.0)
+        self._status_lbl.setStringValue_(f"Fetching size for {repo_id}…")
+
+        def _do():
+            try:
+                import fnmatch, requests
+                from huggingface_hub import model_info as hf_model_info, hf_hub_url
+                from huggingface_hub.utils import build_hf_headers
+
+                ignore = ["*.bin", "*.pt", "original/*"]
+
+                # Fetch file list + sizes
+                try:
+                    info = hf_model_info(repo_id, files_metadata=True)
+                    siblings = info.siblings or []
+                except Exception:
+                    siblings = []
+
+                # Filter ignored patterns
+                files = [
+                    s for s in siblings
+                    if not any(fnmatch.fnmatch(s.rfilename, pat) for pat in ignore)
+                ]
+
+                total_bytes = sum((s.size or 0) for s in files)
+                self._dl_bytes_total = total_bytes
+                self._dl_size_fetched = True
+
+                headers = build_hf_headers()
+                model_dir.mkdir(parents=True, exist_ok=True)
+
+                for sib in files:
+                    fname = sib.rfilename
+                    url = hf_hub_url(repo_id, fname)
+                    dest = model_dir / fname
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    expected = sib.size or 0
+                    resume = dest.stat().st_size if dest.exists() else 0
+                    # Skip files already fully downloaded
+                    if expected and resume >= expected:
+                        byte_counter.bytes_done += expected
+                        continue
+                    req_headers = dict(headers)
+                    if resume:
+                        req_headers["Range"] = f"bytes={resume}-"
+                        byte_counter.bytes_done += resume
+                    with requests.get(url, headers=req_headers, stream=True, timeout=60) as r:
+                        r.raise_for_status()
+                        mode = "ab" if resume else "wb"
+                        with open(dest, mode) as fh:
+                            for chunk in r.iter_content(chunk_size=256 * 1024):
+                                if chunk:
+                                    fh.write(chunk)
+                                    byte_counter.bytes_done += len(chunk)
+
+                self._dl_success_path = str(model_dir)
+            except Exception as e:
+                self._dl_error = str(e)
+
+        threading.Thread(target=_do, daemon=True).start()
+        self._dl_poll = rumps.Timer(self.pollDownload_, 1.0)
+        self._dl_poll.start()
+
+    def pollDownload_(self, timer):
+        total = self._dl_bytes_total
+        size_fetched = getattr(self, '_dl_size_fetched', False)
+
+        # Still fetching size
+        if not size_fetched and self._dl_error is None and self._dl_success_path is None:
+            return
+
+        # Read bytes received directly from the tqdm shim — no disk polling.
+        now = time.time()
+        counter = getattr(self, '_dl_byte_counter', None)
+        done = counter.bytes_done if counter is not None else 0
+
+        # Compute MB/s from delta since last poll
+        prev_done = getattr(self, '_dl_prev_done', 0)
+        prev_time = getattr(self, '_dl_prev_time', now)
+        dt = now - prev_time
+        speed_str = ""
+        if dt > 0 and done > prev_done:
+            mbps = (done - prev_done) / dt / 1_048_576
+            speed_str = f"  {mbps:.1f} MB/s"
+        self._dl_prev_done = done
+        self._dl_prev_time = now
+
+        if total > 0:
+            pct = min(done / total * 100, 99.0)
+            self._progress.setDoubleValue_(pct)
+            done_gb = done / 1_073_741_824
+            total_gb = total / 1_073_741_824
+            self._status_lbl.setStringValue_(
+                f"{done_gb:.2f} / {total_gb:.2f} GB  ({pct:.0f}%){speed_str}")
+        elif size_fetched:
+            done_gb = done / 1_073_741_824
+            self._status_lbl.setStringValue_(f"{done_gb:.2f} GB downloaded…{speed_str}")
+
+        if self._dl_success_path is None and self._dl_error is None:
+            return   # still running
+
+        timer.stop()
+        self._dl_poll = None
+        self._dl_btn.setEnabled_(True)
+        self._downloading = False
+        if self._dl_error:
+            self._progress.setDoubleValue_(0.0)
+            self._status_lbl.setStringValue_(f"Error: {self._dl_error}")
+            self._dl_error = None
+        else:
+            self._progress.setDoubleValue_(100.0)
+            self._status_lbl.setStringValue_(f"✓ Done — {self._dl_success_path}")
+            self._dl_success_path = None
+            if self._app_ref is not None:
+                self._app_ref._model_meta_cache.clear()
+                self._app_ref._rebuild_pending = True
+                # Re-prime metadata cache so new model's arch/size appear in menu
+                self._app_ref._prime_meta_cache()
+
+    # ── Browse / Close ────────────────────────────────────────────────────────
+
+    def browse_(self, _s):
+        from AppKit import NSOpenPanel
+        p = NSOpenPanel.openPanel()
+        p.setCanChooseFiles_(False)
+        p.setCanChooseDirectories_(True)
+        p.setAllowsMultipleSelection_(False)
+        NSApp.activateIgnoringOtherApps_(True)
+        if p.runModal() == NSModalResponseOK:
+            self._dest_fld.setStringValue_(str(Path(p.URL().path())))
+
+    def closeWin_(self, _s):
+        self._win_ref.orderOut_(None)
+
+
+def _make_hf_tqdm_class(counter):
+    """Return a minimal tqdm-compatible class that tallies downloaded bytes
+    into counter.bytes_done.  snapshot_download calls update(chunk_bytes)
+    for every HTTP chunk it writes, giving true real-time byte progress."""
+    import threading as _th
+
+    class _HFTqdm:
+        _lock = _th.Lock()
+
+        @classmethod
+        def get_lock(cls):
+            return cls._lock
+
+        @classmethod
+        def set_lock(cls, lock):
+            cls._lock = lock
+
+        def __init__(self, iterable=None, total=None, unit=None,
+                     unit_scale=None, initial=0, desc=None, **kw):
+            self._iterable = iterable
+            self.total = total or 0
+            self.n = initial or 0
+
+        # iterable support (used for the file-list loop inside snapshot_download)
+        def __iter__(self):
+            if self._iterable is None:
+                return iter([])
+            for item in self._iterable:
+                yield item
+
+        def __len__(self):
+            if self._iterable is not None:
+                try:
+                    return len(self._iterable)
+                except TypeError:
+                    pass
+            return self.total or 0
+
+        def __bool__(self):
+            return True
+
+        def update(self, n=1):
+            self.n += n
+            counter.bytes_done += n
+
+        def refresh(self, nolock=False, **kw):
+            pass
+
+        def clear(self, nolock=False):
+            pass
+
+        def reset(self, total=None):
+            if total is not None:
+                self.total = total
+            self.n = 0
+
+        def close(self):
+            pass
+
+        def set_description(self, desc=None, refresh=True):
+            pass
+
+        def set_description_str(self, s=None, refresh=True):
+            pass
+
+        def set_postfix(self, *a, **kw):
+            pass
+
+        def write(self, s, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.close()
+
+    return _HFTqdm
+
+
+def _make_hf_download_window(app):
+    """Build the HuggingFace download NSWindow. Returns (win, handler)."""
+    W, H = 640, 300
+    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
+    win.setTitle_("Download from HuggingFace")
+    win.center()
+    cv = win.contentView()
+
+    handler = _HFDownloadHandler.alloc().init()
+    handler._app_ref = app
+    handler._win_ref = win
+    handler._results = []
+    handler._downloading = False
+    handler._dl_error = None
+    handler._dl_success_path = None
+    handler._dl_bytes_total = 0
+    handler._dl_size_fetched = False
+    handler._dl_model_dir = Path(".")
+    handler._dl_byte_counter = None
+    handler._dl_prev_done = 0
+    handler._dl_prev_time = 0.0
+    handler._search_poll = None
+    handler._dl_poll = None
+    handler._pending_items = None
+    handler._auto_select_first = False
+
+    y = H - _PAD
+    ROW = _RH + _RG
+
+    # ── Row 1: Filter selector (full width, prominent) ────────────────────────
+    y -= _RH
+    cv.addSubview_(_lbl("Type:", ((_PAD, y), (50, _RH)), right=False))
+    fp = NSPopUpButton.alloc().initWithFrame_(
+        ((_PAD + 55, y - 2), (100, _RH + 4)))
+    fp.addItemWithTitle_("MLX")
+    fp.addItemWithTitle_("GGUF")
+    fp.setTarget_(handler)
+    fp.setAction_("filterChanged:")
+    cv.addSubview_(fp)
+    handler._filter_popup = fp
+
+    # ── Row 2: Search field + button ─────────────────────────────────────────
+    y -= ROW
+    cv.addSubview_(_lbl("Search:", ((_PAD, y), (50, _RH)), right=False))
+    qf = NSTextField.alloc().initWithFrame_(
+        ((_PAD + 55, y), (W - _PAD*2 - 55 - 80, _RH)))
+    qf.setPlaceholderString_("e.g. Qwen3, llama, mistral")
+    cv.addSubview_(qf)
+    handler._query_fld = qf
+    cv.addSubview_(_btn("Search", handler, "search:",
+                        ((W - _PAD - 74, y), (74, _RH)), "\r"))
+
+    # ── Row 3: Results dropdown ───────────────────────────────────────────────
+    y -= ROW
+    cv.addSubview_(_lbl("Result:", ((_PAD, y), (50, _RH)), right=False))
+    rp = NSPopUpButton.alloc().initWithFrame_(
+        ((_PAD + 55, y - 2), (W - _PAD*2 - 55, _RH + 4)))
+    rp.addItemWithTitle_("— search above —")
+    rp.setTarget_(handler)
+    rp.setAction_("resultChanged:")
+    cv.addSubview_(rp)
+    handler._results_popup = rp
+
+    # ── Row 4: Info line (size / downloads / likes) ───────────────────────────
+    y -= ROW
+    info = _lbl("", ((_PAD, y), (W - _PAD*2, _RH)), right=False)
+    cv.addSubview_(info)
+    handler._info_lbl = info
+
+    # ── Row 5: Destination dir ────────────────────────────────────────────────
+    y -= ROW
+    cv.addSubview_(_lbl("Save to:", ((_PAD, y), (50, _RH)), right=False))
+    default_dir = app._cfg.get("mlx_dir", str(Path.home() / "models"))
+    df = NSTextField.alloc().initWithFrame_(
+        ((_PAD + 55, y), (W - _PAD*2 - 55 - 74, _RH)))
+    df.setStringValue_(default_dir)
+    cv.addSubview_(df)
+    handler._dest_fld = df
+    cv.addSubview_(_btn("Browse…", handler, "browse:",
+                        ((W - _PAD - 68, y), (68, _RH))))
+
+    # ── Progress bar ──────────────────────────────────────────────────────────
+    y -= ROW
+    from AppKit import NSProgressIndicator
+    prog = NSProgressIndicator.alloc().initWithFrame_(
+        ((_PAD, y + 4), (W - _PAD*2, 12)))
+    prog.setStyle_(0)
+    prog.setIndeterminate_(False)
+    prog.setDoubleValue_(0.0)
+    cv.addSubview_(prog)
+    handler._progress = prog
+
+    # ── Status label ──────────────────────────────────────────────────────────
+    y -= 22
+    sl = NSTextField.alloc().initWithFrame_(((_PAD, y), (W - _PAD*2, _RH)))
+    sl.setStringValue_("")
+    sl.setBezeled_(False)
+    sl.setDrawsBackground_(False)
+    sl.setEditable_(False)
+    sl.setSelectable_(True)   # allows copy-paste of error text
+    sl.setLineBreakMode_(0)   # NSLineBreakByWordWrapping
+    cv.addSubview_(sl)
+    handler._status_lbl = sl
+
+    # ── Buttons ───────────────────────────────────────────────────────────────
+    cv.addSubview_(_btn("Close", handler, "closeWin_",
+                        ((_PAD, _BTN_BOT), (80, _BTN_H))))
+    dl_btn = _btn("⬇  Download", handler, "download:",
+                  ((W - _PAD - 120, _BTN_BOT), (120, _BTN_H)))
+    cv.addSubview_(dl_btn)
+    handler._dl_btn = dl_btn
+
+    return win, handler
+
+
 if __name__ == "__main__":
-    ModelSwitcher().run()
+    Switchman().run()

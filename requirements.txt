@@ -3,3 +3,5 @@ pyobjc-framework-Cocoa>=10.0
 pyobjc-framework-WebKit>=10.0
 pyobjc-framework-UserNotifications>=10.0
 pyobjc-framework-Quartz>=10.0
+huggingface-hub>=0.20.0
+requests>=2.31.0

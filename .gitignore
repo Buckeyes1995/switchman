@@ -19,3 +19,7 @@ __pycache__/
 
 # Plan files (internal working docs)
 PLAN_*.md
+
+# Personal machine config (contains IPs, paths, API keys)
+AGENTS.md
+CLAUDE.md

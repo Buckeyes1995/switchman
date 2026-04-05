@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run model-switcher, creating venv on first launch
+# Run Switchman, creating venv on first launch
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,4 +11,4 @@ if [[ ! -d "$VENV" ]]; then
     "$VENV/bin/pip" install -q -r "$DIR/requirements.txt"
 fi
 
-exec "$VENV/bin/python" "$DIR/model_switcher.py"
+exec "$VENV/bin/python" "$DIR/switchman.py"
