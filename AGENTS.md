@@ -1,4 +1,4 @@
-# model-switcher — Coding Agent Instructions
+# Switchman — Coding Agent Instructions
 
 ## Role
 
@@ -11,16 +11,16 @@ If you see a design problem, add a comment (`# TODO: question here`) and continu
 
 1. Read `CLAUDE.md` — it is the authoritative architecture reference
 2. Read any `PLAN_*.md` file relevant to your task
-3. Do not redo work already in `model_switcher.py`
+3. Do not redo work already in `switchman.py`
 
 ## Coding Guidelines
 
-- Python 3.13, single-file app (`model_switcher.py`)
+- Python 3.13, single-file app (`switchman.py`)
 - All UI callbacks run on the **main thread** (rumps/AppKit requirement)
 - Background work goes in daemon threads; set `self._rebuild_pending = True` to trigger a main-thread menu rebuild
 - Never call `_build_menu()` from a background thread
 - Never reuse `rumps.MenuItem` instances across menu rebuilds
-- After any edit, verify syntax: `python3 -c "import ast; ast.parse(open('model_switcher.py').read())"`
+- After any edit, verify syntax: `python3 -c "import ast; ast.parse(open('switchman.py').read())"`
 
 ## PyObjC — Known Mistakes to Avoid
 

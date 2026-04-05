@@ -1,4 +1,4 @@
-# model-switcher — CLAUDE.md
+# Switchman — CLAUDE.md
 
 Agent guidance for working on this project.
 
@@ -17,14 +17,14 @@ Venv lives at `.venv/` (Python 3.13 via `/opt/homebrew/bin/python3.13`).
 ## File layout
 
 ```
-model_switcher.py   # entire app — single file by design
+switchman.py   # entire app — single file by design
 run.sh              # bootstrap launcher
 requirements.txt    # rumps, pyobjc-framework-Cocoa/WebKit/UserNotifications
 CLAUDE.md           # this file
 AGENTS.md           # coding agent guidelines
 ```
 
-Config persists at `~/.config/model-switcher/config.json`.
+Config persists at `~/.config/switchman/config.json`.
 
 ## Architecture
 
