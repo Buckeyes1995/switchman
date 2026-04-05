@@ -4264,14 +4264,43 @@ class _HFDownloadHandler(NSObject):
             self._status_lbl.setStringValue_(f"Error: {self._dl_error}")
             self._dl_error = None
         else:
+            success_path = self._dl_success_path
             self._progress.setDoubleValue_(100.0)
-            self._status_lbl.setStringValue_(f"✓ Done — {self._dl_success_path}")
+            self._status_lbl.setStringValue_(f"✓ Done — {success_path}")
             self._dl_success_path = None
             if self._app_ref is not None:
-                self._app_ref._model_meta_cache.clear()
-                self._app_ref._rebuild_pending = True
-                # Re-prime metadata cache so new model's arch/size appear in menu
-                self._app_ref._prime_meta_cache()
+                app = self._app_ref
+                model_name = Path(success_path).name
+
+                # Hide by default — ask the user what they want
+                if model_name not in app._cfg["hidden_models"]:
+                    app._cfg["hidden_models"].append(model_name)
+                    save_config(app._cfg)
+
+                app._model_meta_cache.clear()
+                app._rebuild_pending = True
+                app._prime_meta_cache()
+
+                # Ask whether to add to menu / set as default / keep hidden
+                from AppKit import NSAlert
+                alert = NSAlert.alloc().init()
+                alert.setMessageText_(f'"{model_name}" downloaded')
+                alert.setInformativeText_(
+                    "Add it to the model menu, set it as your default (★), "
+                    "or keep it hidden until you're ready.")
+                alert.addButtonWithTitle_("Set as Default ★")
+                alert.addButtonWithTitle_("Add to Menu")
+                alert.addButtonWithTitle_("Keep Hidden")
+                NSApp.activateIgnoringOtherApps_(True)
+                resp = alert.runModal()
+
+                if resp in (1000, 1001):   # Set as Default OR Add to Menu
+                    if model_name in app._cfg["hidden_models"]:
+                        app._cfg["hidden_models"].remove(model_name)
+                    if resp == 1000:       # Set as Default
+                        app._cfg["default_model"] = model_name
+                    save_config(app._cfg)
+                    app._rebuild_pending = True
 
     # ── Browse / Close ────────────────────────────────────────────────────────
 
