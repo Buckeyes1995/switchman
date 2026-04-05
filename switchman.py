@@ -3015,11 +3015,9 @@ class Switchman(rumps.App):
                 toks = usage.get("completion_tokens", 0)
                 if elapsed > 0 and toks > 0:
                     self._last_toks = toks / elapsed
-                prompt_toks = usage.get("prompt_tokens", 0)
-                if prompt_toks > 0:
-                    self._ctx_used = prompt_toks + toks
-                    p = model_params(self._cfg, name)
-                    self._ctx_max = p.get("context", 32768)
+                # Do NOT update ctx from the probe ping — it uses a trivial
+                # "hi" prompt so prompt_tokens is ~5, always showing 0% ctx.
+                # Context is only updated from Quick Test responses.
             self._rebuild_pending = True
         threading.Thread(target=_poll, daemon=True).start()
 
