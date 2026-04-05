@@ -13,14 +13,6 @@ Supports **MLX** models via [oMLX](https://github.com/jmorganca/omlx) (Apple Sil
 
 ---
 
-<!-- screenshots -->
-![Switchman menu](docs/screenshots/menu.png)
-![Quick Test](docs/screenshots/quicktest.png)
-![Benchmark history](docs/screenshots/benchmark_history.png)
-![Settings](docs/screenshots/settings.png)
-
----
-
 ## Why Switchman?
 
 Most local LLM tools are either full desktop apps (LM Studio, Ollama Desktop) or web UIs (Open WebUI). Switchman is neither — it lives in the menu bar and stays out of the way.
@@ -31,14 +23,53 @@ Most local LLM tools are either full desktop apps (LM Studio, Ollama Desktop) or
 - **llama-bench integration** — sweep batch sizes, cache types, and flash attention from a GUI; results saved to history with a Chart.js chart
 - **Built for power users** — per-model sampling params, profiles, thinking mode, agent config sync, global hotkey
 
-If you want a polished GUI with model discovery and a chat interface, use LM Studio. If you want a lightweight menu bar switch that gets out of your way while you work, this is for you.
+If you want a polished GUI with model discovery and a chat interface, use LM Studio. If you want a lightweight menu bar switcher that gets out of your way while you work, this is for you.
+
+---
+
+## Screenshots
+
+<table>
+<tr>
+<td valign="top" width="40%">
+
+**Menu bar** — one click to switch models. Live tok/s in the title. MLX and GGUF unified in the same menu.
+
+<img src="docs/screenshots/menu.png" width="300"/>
+
+</td>
+<td valign="top" width="60%">
+
+**Quick Test** — stream a response with TTFT, tok/s, and context stats. Side-by-side compare mode available.
+
+<img src="docs/screenshots/quicktest.png" width="440"/>
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Settings** — per-model context, sampling params, aliases, and presets. Global settings in a separate panel.
+
+<img src="docs/screenshots/settings.png" width="300"/>
+
+</td>
+<td valign="top">
+
+**Benchmark history** — interactive Chart.js chart across runs, with CSV export.
+
+<img src="docs/screenshots/benchmark_history.png" width="440"/>
+
+</td>
+</tr>
+</table>
 
 ---
 
 ## Core Features
 
 - **One-click model switching** — MLX and GGUF in the same menu; cancels in-flight loads instantly
-- **Live tokens/second + context meter** — `⚡ 42 t/s 14%ctx` updated every 10 seconds
+- **Live tokens/second** — `⚡ 42 t/s` updated every 5 seconds
 - **Default model at startup** — auto-loads your preferred model on every launch
 - **Download from HuggingFace** — search, preview size, and download with real-time MB/s progress; resumes interrupted downloads automatically
 - **Quick model search** — floating search panel with type-to-filter and keyboard navigation
