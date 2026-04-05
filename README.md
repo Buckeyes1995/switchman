@@ -2,8 +2,6 @@
 
 A macOS menu bar app for switching between local LLM inference engines. Supports [oMLX](https://github.com/jmorganca/omlx) (MLX models) and [llama.cpp](https://github.com/ggerganov/llama.cpp) (GGUF models), with automatic server management, [opencode](https://opencode.ai) integration, and benchmarking tools.
 
-![macOS menu bar](docs/screenshot_menu.png)
-
 > Built for Apple Silicon. Tested on M2 Max (96GB) running macOS 15+.
 
 ---

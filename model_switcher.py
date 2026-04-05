@@ -817,11 +817,13 @@ def run_benchmark_config_panel(name: str, kind: str, cfg: dict) -> BenchmarkConf
 
     # SECTION_H: height of the mode-specific content area (same for both GGUF modes)
     # llama-bench: header(20)+3 rows(90)+gap(16)+header(20)+3 rows(90)
-    #              +cache_K label(20)+chks(30)+cache_V label(20)+chks(30) = 336
-    # API:         header(20)+n_prompts(150)+gap(16)+header(20)+2 rows(60)=266 ≤ 336
+    #              +cache_K label(20)+chks(30)+cache_V label(20) = 306
+    #              (ctv hardcoded to f16 — no checkbox row)
+    # API:         header(20)+n_prompts(150)+gap(16)+header(20)+2 rows(60)=266 ≤ 306
     SECTION_H = (_SH + _SG + 3 * (_RH + _RG)
                  + _DG + _SH + _SG + 3 * (_RH + _RG)
-                 + 2 * (_SH + _SG + _RH + _RG))   # 336
+                 + _SH + _SG + _RH + _RG   # cache K label + checkboxes
+                 + _SH)                     # cache V label only (no checkboxes)
 
     if is_gguf:
         H = (_PAD
@@ -923,15 +925,12 @@ def run_benchmark_config_panel(name: str, kind: str, cfg: dict) -> BenchmarkConf
             chk.setFont_(NSFont.systemFontOfSize_(11))
             bench_container.addSubview_(chk); ctk_chks.append(chk)
         sc += _RH + _RG
-        bench_container.addSubview_(_lbl("Cache type V:",
+        # ctv is hardcoded to f16 — quantized V-cache is not supported by the
+        # Metal backend for most model architectures on Apple Silicon.
+        bench_container.addSubview_(_lbl(
+            "Cache type V: f16 (Metal only)",
             ((_PAD, sfy(sc, _SH)), (W - 2*_PAD, _SH)), right=False))
         sc += _SH + _SG
-        for j, qt in enumerate(CACHE_QUANT_TYPES):
-            chk = NSButton.alloc().initWithFrame_(((_PAD + j*chk_w, sfy(sc)), (chk_w, _RH)))
-            chk.setTitle_(qt); chk.setButtonType_(3)
-            chk.setState_(1 if qt == "f16" else 0)
-            chk.setFont_(NSFont.systemFontOfSize_(11))
-            bench_container.addSubview_(chk); ctv_chks.append(chk)
         cv.addSubview_(bench_container)
         handler._bench_container = bench_container
 
@@ -1064,7 +1063,7 @@ def run_benchmark_config_panel(name: str, kind: str, cfg: dict) -> BenchmarkConf
         flash_attns = [0]
 
     ctk_list = [qt for qt, c in zip(CACHE_QUANT_TYPES, ctk_chks) if c.state()] or ["f16"]
-    ctv_list = [qt for qt, c in zip(CACHE_QUANT_TYPES, ctv_chks) if c.state()] or ["f16"]
+    ctv_list = ["f16"]  # V-cache quant unsupported on Metal — always f16
 
     # API sweep params (MLX and GGUF API mode both support comma-separated gen tokens)
     n_gen_values = _ints(ngen_fld, 128) if (ngen_fld and mode == "api") else [n_gen]
