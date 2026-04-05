@@ -33,7 +33,7 @@ If you want a polished GUI with model discovery and a chat interface, use LM Stu
 <tr>
 <td valign="top" width="40%">
 
-**Menu bar** — one click to switch models. Live tok/s in the title. MLX and GGUF unified in the same menu.
+**Menu bar** — one click to switch models. Active model name in the title. MLX and GGUF unified in the same menu.
 
 <img src="docs/screenshots/menu.png" width="300"/>
 
@@ -69,7 +69,7 @@ If you want a polished GUI with model discovery and a chat interface, use LM Stu
 ## Core Features
 
 - **One-click model switching** — MLX and GGUF in the same menu; cancels in-flight loads instantly
-- **Live tokens/second** — `⚡ 42 t/s` updated every 5 seconds
+- **Live status in menu bar** — shows active model name; `⚡` icon with memory pressure indicator
 - **Default model at startup** — auto-loads your preferred model on every launch
 - **Download from HuggingFace** — search, preview size, and download with real-time MB/s progress; resumes interrupted downloads automatically
 - **Quick model search** — floating search panel with type-to-filter and keyboard navigation

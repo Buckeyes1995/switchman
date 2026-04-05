@@ -2735,7 +2735,7 @@ class Switchman(rumps.App):
         self._bench_progress_field = None        # NSTextField ref
         self._bench_progress_timer: rumps.Timer | None = None
         # Feature: live tok/s + context usage
-        self._last_toks: float | None = None
+        self._last_toks: float | None = None  # unused; kept for compat
         self._ctx_used: int | None = None   # prompt+completion tokens from last poll
         self._ctx_max: int | None = None    # context window for active model
         self._tps_poll_timer: rumps.Timer | None = None
@@ -2938,16 +2938,11 @@ class Switchman(rumps.App):
     # ── Live tok/s polling ────────────────────────────────────────────────────
 
     def _start_tps_poll(self):
-        if self._tps_poll_timer is not None:
-            return
-        self._tps_poll_timer = rumps.Timer(self._on_tps_tick, 5)
-        self._tps_poll_timer.start()
+        # tok/s probe removed — inaccurate (measures 8-token idle ping,
+        # not real generation speed). Watchdog still runs independently.
         self._start_watchdog()
 
     def _stop_tps_poll(self):
-        if self._tps_poll_timer:
-            self._tps_poll_timer.stop()
-            self._tps_poll_timer = None
         self._stop_watchdog()
 
     def _start_watchdog(self):
@@ -2995,31 +2990,7 @@ class Switchman(rumps.App):
         threading.Thread(target=_check, daemon=True).start()
 
     def _on_tps_tick(self, _timer):
-        if self._loading or not self._active:
-            self._stop_tps_poll()
-            return
-        name, port = self._active, self._cfg.get("omlx_port", 8000)
-        api_key = self._cfg.get("omlx_api_key", "")
-        def _poll():
-            body = {"model": name,
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "max_tokens": 8, "stream": False}
-            headers = {"Content-Type": "application/json",
-                       "Authorization": f"Bearer {api_key}"}
-            t0 = time.time()
-            resp = http_post(f"http://localhost:{port}/v1/chat/completions",
-                             body, headers, timeout=20)
-            if resp and "usage" in resp:
-                elapsed = time.time() - t0
-                usage = resp["usage"]
-                toks = usage.get("completion_tokens", 0)
-                if elapsed > 0 and toks > 0:
-                    self._last_toks = toks / elapsed
-                # Do NOT update ctx from the probe ping — it uses a trivial
-                # "hi" prompt so prompt_tokens is ~5, always showing 0% ctx.
-                # Context is only updated from Quick Test responses.
-            self._rebuild_pending = True
-        threading.Thread(target=_poll, daemon=True).start()
+        pass  # probe removed; method kept so any lingering timer refs are harmless
 
     # ── Menu ──────────────────────────────────────────────────────────────────
 
@@ -3222,14 +3193,7 @@ class Switchman(rumps.App):
             self._stop_flash()
             mem_dot = "🔴" if self._mem_pressure == "critical" else ""
             if self._active:
-                ctx_part = ""
-                if self._ctx_used and self._ctx_max:
-                    pct = int(self._ctx_used / self._ctx_max * 100)
-                    ctx_part = f" {pct}%ctx"
-                if self._last_toks is not None:
-                    self.title = f"⚡{mem_dot} {int(self._last_toks)} t/s{ctx_part}"
-                else:
-                    self.title = f"⚡{mem_dot} {self._title_label(self._active)}{ctx_part}"
+                self.title = f"⚡{mem_dot} {self._title_label(self._active)}"
             else:
                 self.title = f"⚡{mem_dot}"
 

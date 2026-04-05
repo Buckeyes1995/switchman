@@ -110,7 +110,6 @@ Run a user-defined shell script on model switch events. Enables custom integrati
 - `windowWillClose_` delegate on download window may not always fire when window is force-quit
 - Benchmark list append is not thread-safe (low risk under GIL but not guaranteed)
 - `_active` and `_loading` written from background threads without locks
-- tok/s probe does not update during active long generations — the 8-token test request queues behind the real generation and may time out; stat updates resume on the next poll after the generation completes
 
 ---
 
