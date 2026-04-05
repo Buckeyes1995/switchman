@@ -154,7 +154,7 @@ Metadata is populated in a background thread via `_prime_meta_cache()` and signa
 - **Multiple opencode windows** — reopens one window per unique CWD. Tested with single window only.
 - **Terminal.app support** — implemented but untested.
 - **No error dialog** — if omlx fails to start, loading indicator stops but no user-visible error is shown.
-- **Metal KV cache quant** — quantized V-cache (`ctv != f16`) fails for many model architectures on Apple Silicon. f16 always works.
+- **Metal KV cache quant** — quantized V-cache (`ctv != f16`) fails for every model tested on Apple Silicon with llama.cpp's Metal backend. The error is "failed to create context" with no further detail — it crashes before llm_load even prints context size info. K-cache quant (`ctk`) works fine on most models except those with unusual head dimensions (e.g. "unpacked" dense variants like Bonsai Q6_K). ctv is hardcoded to f16 in the UI. Root cause unknown — likely a missing Metal kernel for quantized V attention. Worth re-testing after llama.cpp updates.
 
 ## Key pitfalls (don't repeat these)
 

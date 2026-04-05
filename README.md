@@ -174,7 +174,7 @@ Configure sweep parameters:
 - **Flash attention** — off / on / sweep both
 - **Cache type K/V** — select from f16, q8_0, q4_0, q4_1, q5_0, q5_1
 
-> **Note on Metal KV cache quantization:** Not all quant types are supported by the Metal backend for every model architecture. If combination N fails with "failed to create context", that quant type is incompatible with your model on Apple Silicon. f16 always works.
+> **Note on Metal KV cache quantization:** Quantized V-cache (`ctv != f16`) fails for every model tested on Apple Silicon — llama.cpp's Metal backend crashes with "failed to create context" before loading even begins. ctv is therefore hardcoded to f16. K-cache quant (`ctk`) works on most models; exceptions include models with unusual head dimensions (e.g. unpacked dense variants). Re-test after llama.cpp updates.
 
 ### API benchmark (MLX and GGUF)
 
