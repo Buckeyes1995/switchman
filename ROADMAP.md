@@ -88,6 +88,18 @@ Support `HF_TOKEN` for downloading gated models (Llama, Gemma, etc.) and higher 
 ### Model Comparison History
 Save side-by-side compare results from Quick Test to a history file. Browse and export past comparisons.
 
+### IDE / Client Sync — Aider
+On model switch, update `~/.aider.conf.yml` with the new `openai-api-base` (port) and model name. Aider is widely used in the local LLM community and reads this file on startup.
+
+### IDE / Client Sync — Zed
+On model switch, update `~/.config/zed/settings.json` under `assistant` → `default_model` with the new provider URL and model name. Zed's assistant supports custom OpenAI-compatible providers.
+
+### IDE / Client Sync — Fix Continue.dev
+Current sync only updates `apiBase` (the port) but not the model name. Fix to also write the active model name so Continue selects the right model after a switch. Needs real-world testing.
+
+### IDE / Client Sync — Remove Cursor
+Current Cursor sync writes to `~/.cursor/mcp.json` as an MCP tool server, which has nothing to do with Cursor's AI model provider. Remove it — it does nothing useful and the README claim is misleading.
+
 ---
 
 ## Larger / Longer Term

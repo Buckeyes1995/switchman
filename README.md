@@ -91,7 +91,7 @@ If you want a polished GUI with model discovery and a chat interface, use LM Stu
 - **Copy model ID** — copies `omlx/ModelName` for use in any OpenAI-compatible client
 - **Global hotkey ⌥Space** — open the menu from anywhere (requires Accessibility permission)
 - **macOS notifications** — fires when a model loads or a server crashes
-- **opencode / Cursor / Continue.dev sync** *(optional)* — keeps coding agent configs in sync on every switch
+- **opencode sync** *(optional)* — keeps opencode config in sync on every switch; Continue.dev and Aider/Zed support planned
 
 ---
 
