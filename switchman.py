@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import rumps
+import objc
 
 try:
     from AppKit import (
@@ -47,6 +48,7 @@ _MS_CONFIG_DIR       = Path.home() / ".config" / "switchman"
 BENCHMARK_PROMPTS_PATH = _MS_CONFIG_DIR / "benchmark_prompts.json"
 BENCH_HISTORY_PATH   = _MS_CONFIG_DIR / "bench_history.json"
 PROFILES_PATH        = _MS_CONFIG_DIR / "profiles.json"
+PENDING_DOWNLOAD_PATH = _MS_CONFIG_DIR / "pending_download.json"
 CACHE_QUANT_TYPES = ["f16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1"]
 
 _DEFAULT_BENCHMARK_PROMPTS: dict[str, str] = {
@@ -1854,6 +1856,31 @@ def save_profiles(profiles: list[dict]) -> None:
         pass
 
 
+def save_pending_download(repo_id: str, dest_dir: str, filter_tag: str) -> None:
+    try:
+        PENDING_DOWNLOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PENDING_DOWNLOAD_PATH.write_text(json.dumps(
+            {"repo_id": repo_id, "dest_dir": dest_dir, "filter": filter_tag}))
+    except Exception:
+        pass
+
+
+def clear_pending_download() -> None:
+    try:
+        PENDING_DOWNLOAD_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def load_pending_download() -> dict | None:
+    try:
+        if PENDING_DOWNLOAD_PATH.exists():
+            return json.loads(PENDING_DOWNLOAD_PATH.read_text())
+    except Exception:
+        pass
+    return None
+
+
 def run_create_profile_panel(all_models: list[str],
                              presets: list[str]) -> dict | None:
     """Modal to create or edit a profile. Returns dict or None on cancel."""
@@ -2246,38 +2273,27 @@ def omlx_start(cfg: dict) -> bool:
 
 
 def send_model_ready_notification(name: str) -> None:
-    """Fire a local macOS notification. Safe to call from any thread."""
-    if UNUserNotificationCenter is None:
-        return
+    """Fire a local macOS notification via osascript.
+
+    UNUserNotificationCenter requires a bundle ID, which a bare Python script
+    doesn't have — permission requests silently fail.  osascript works from any
+    context with no bundle or permission prompt needed.
+    """
     try:
-        content = UNMutableNotificationContent.alloc().init()
-        content.setTitle_("Switchman")
-        content.setBody_(f"Model ready: {name}")
-        req = UNNotificationRequest.requestWithIdentifier_content_trigger_(
-            str(uuid.uuid4()), content, None)
-        def _noop(error):
-            pass
-        UNUserNotificationCenter.currentNotificationCenter() \
-            .addNotificationRequest_withCompletionHandler_(req, _noop)
+        import subprocess
+        safe_name = name.replace('"', '\\"')
+        subprocess.Popen(
+            ["osascript", "-e",
+             f'display notification "Model ready: {safe_name}" with title "Switchman"'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
     except Exception:
         pass
 
 
 def request_notification_permission() -> None:
-    """Ask for notification permission once (idempotent — system caches grant).
-    Must be called from a background thread — the completion handler block fires
-    asynchronously and must not be nil (passing nil crashes NSApplication.run)."""
-    if UNUserNotificationCenter is None:
-        return
-    try:
-        opts = UNAuthorizationOptionAlert | UNAuthorizationOptionSound
-        # The completion handler MUST be a real callable (nil crashes the run loop)
-        def _handler(granted, error):
-            pass
-        UNUserNotificationCenter.currentNotificationCenter() \
-            .requestAuthorizationWithOptions_completionHandler_(opts, _handler)
-    except Exception:
-        pass
+    """No-op — osascript needs no permission prompt."""
+    pass
 
 
 # ── opencode helpers ──────────────────────────────────────────────────────────
@@ -2462,19 +2478,205 @@ def _open_terminal(app: str, cwd: str, command: str) -> None:
     safe_cwd = cwd.replace("'", "\\'")
     safe_cmd = command.replace("'", "\\'")
     if app == "iTerm2":
+        # Capture the new window reference so we write into the right session,
+        # not whatever session happens to be frontmost.
         script = f"""tell application "iTerm"
     activate
-    create window with default profile
-    tell current session of current window
+    set newWin to (create window with default profile)
+    tell current session of newWin
         write text "cd '{safe_cwd}' && {safe_cmd}"
     end tell
 end tell"""
     else:
+        # do script without a target always opens a new Terminal window.
         script = f"""tell application "Terminal"
     activate
     do script "cd '{safe_cwd}' && {safe_cmd}"
 end tell"""
     subprocess.run(["osascript", "-e", script], capture_output=True)
+
+
+# ── Quick model search ────────────────────────────────────────────────────────
+
+class _ModelSearchDelegate(objc.lookUpClass("NSObject")):
+    """Data source + delegate for the quick-search results table."""
+
+    def initWithApp_(self, app):
+        self = objc.super(_ModelSearchDelegate, self).init()
+        if self is None:
+            return None
+        self._app = app
+        self._all_names: list[str] = []
+        self._filtered: list[str] = []
+        self._table = None
+        self._panel = None
+        return self
+
+    def setNames_(self, names):
+        self._all_names = names
+        self._filtered = names[:]
+
+    def filter_(self, query: str):
+        q = query.lower()
+        if q:
+            self._filtered = [n for n in self._all_names
+                              if q in (self._app._alias(n) or n).lower()
+                              or q in n.lower()]
+        else:
+            self._filtered = self._all_names[:]
+        if self._table:
+            self._table.reloadData()
+            if self._filtered:
+                self._table.selectRowIndexes_byExtendingSelection_(
+                    objc.lookUpClass("NSIndexSet").indexSetWithIndex_(0), False)
+
+    # NSTableViewDataSource
+    def numberOfRowsInTableView_(self, tv):
+        return len(self._filtered)
+
+    def tableView_objectValueForTableColumn_row_(self, tv, col, row):
+        if row >= len(self._filtered):
+            return ""
+        name = self._filtered[row]
+        alias = self._app._alias(name)
+        display = alias or name
+        is_active = self._app._active == name
+        is_default = self._app._cfg.get("default_model") == name
+        prefix = "▶ " if is_active else ("★ " if is_default else "  ")
+        meta = self._app._get_model_meta(name)
+        meta_str = f"  {meta[0]}" if meta else ""
+        return f"{prefix}{display}{meta_str}"
+
+    # NSTableViewDelegate — double-click or Enter selects
+    def tableViewSelectionDidChange_(self, note):
+        pass
+
+    def selectCurrent(self):
+        if not self._table:
+            return
+        row = self._table.selectedRow()
+        if 0 <= row < len(self._filtered):
+            name = self._filtered[row]
+            self._panel.orderOut_(None)
+            # Simulate a menu selection
+            class _FakeSender:
+                pass
+            s = _FakeSender()
+            s._model_name = name
+            self._app._on_select(s)
+
+
+def _open_model_search(app) -> None:
+    """Show a small floating search panel for quick model switching."""
+    W, H = 480, 300
+    panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        ((0, 0), (W, H)),
+        # titled | closable | resizable | nonactivating
+        0b1000000000000 | 2 | 1 | 8,
+        NSBackingStoreBuffered, False)
+    panel.setTitle_("Switch Model")
+    panel.center()
+    panel.setLevel_(8)  # NSFloatingWindowLevel
+    cv = panel.contentView()
+
+    # Search field
+    sf = NSTextField.alloc().initWithFrame_(((_PAD, H - _PAD - 28), (W - _PAD*2, 28)))
+    sf.setPlaceholderString_("Type to filter models…")
+    sf.setBezeled_(True)
+    sf.setBezelStyle_(1)
+    sf.setFont_(NSFont.systemFontOfSize_(14.0))
+    cv.addSubview_(sf)
+
+    # Results table inside a scroll view
+    table_y = _PAD + 36
+    table_h = H - _PAD - 28 - _PAD - 36
+    scroll = NSScrollView.alloc().initWithFrame_(
+        ((_PAD, table_y), (W - _PAD*2, table_h)))
+    scroll.setHasVerticalScroller_(True)
+    scroll.setAutohidesScrollers_(True)
+
+    from AppKit import NSTableView, NSTableColumn
+    tv = NSTableView.alloc().initWithFrame_(((0, 0), (W - _PAD*2, table_h)))
+    col = NSTableColumn.alloc().initWithIdentifier_("model")
+    col.setWidth_(W - _PAD*2 - 20)
+    col.headerCell().setStringValue_("Model")
+    tv.addTableColumn_(col)
+    tv.setHeaderView_(None)
+    tv.setUsesAlternatingRowBackgroundColors_(True)
+    tv.setRowHeight_(20)
+    scroll.setDocumentView_(tv)
+    cv.addSubview_(scroll)
+
+    # Close / select button row
+    close_y = _PAD
+    from AppKit import NSButton
+    sel_btn = NSButton.alloc().initWithFrame_(
+        ((W - _PAD - 100, close_y), (100, 28)))
+    sel_btn.setTitle_("Load Model")
+    sel_btn.setBezelStyle_(1)
+    cv.addSubview_(sel_btn)
+
+    # Wire delegate
+    all_names = sorted(
+        [n for n in app._model_map if n not in app._cfg.get("hidden_models", [])],
+        key=lambda n: _hf_sort_key({"modelId": app._alias(n) or n})
+    )
+    delegate = _ModelSearchDelegate.alloc().initWithApp_(app)
+    delegate.setNames_(all_names)
+    delegate._table = tv
+    delegate._panel = panel
+    tv.setDataSource_(delegate)
+    tv.setDelegate_(delegate)
+    tv.reloadData()
+    if all_names:
+        tv.selectRowIndexes_byExtendingSelection_(
+            objc.lookUpClass("NSIndexSet").indexSetWithIndex_(0), False)
+
+    # Search field → filter callback via a small NSObject shim
+    class _SFDelegate(objc.lookUpClass("NSObject")):
+        def controlTextDidChange_(self, note):
+            delegate.filter_(sf.stringValue())
+        def control_textView_doCommandBySelector_(self, ctrl, tv2, sel):
+            import objc as _objc
+            sel_str = _objc.selector.name if hasattr(sel, 'name') else str(sel)
+            if "insertNewline" in str(sel):
+                delegate.selectCurrent()
+                return True
+            if "moveDown" in str(sel):
+                row = max(0, (self._table_ref.selectedRow() + 1))
+                self._table_ref.selectRowIndexes_byExtendingSelection_(
+                    objc.lookUpClass("NSIndexSet").indexSetWithIndex_(row), False)
+                self._table_ref.scrollRowToVisible_(row)
+                return True
+            if "moveUp" in str(sel):
+                row = max(0, self._table_ref.selectedRow() - 1)
+                self._table_ref.selectRowIndexes_byExtendingSelection_(
+                    objc.lookUpClass("NSIndexSet").indexSetWithIndex_(row), False)
+                self._table_ref.scrollRowToVisible_(row)
+                return True
+            return False
+
+    sfd = _SFDelegate.alloc().init()
+    sfd._table_ref = tv
+    sf.setDelegate_(sfd)
+
+    # Button action
+    class _BtnTarget(objc.lookUpClass("NSObject")):
+        def clicked_(self, _s):
+            delegate.selectCurrent()
+    btn_target = _BtnTarget.alloc().init()
+    sel_btn.setTarget_(btn_target)
+    sel_btn.setAction_(objc.selector(btn_target.clicked_, signature=b"v@:@"))
+
+    # Keep strong refs on the app (NSPanel won't accept Python attrs)
+    app._search_panel = panel
+    app._search_delegate = delegate
+    app._search_sfd = sfd
+    app._search_btn = btn_target
+
+    NSApp.activateIgnoringOtherApps_(True)
+    panel.makeKeyAndOrderFront_(None)
+    panel.makeFirstResponder_(sf)
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -2848,6 +3050,7 @@ class Switchman(rumps.App):
         menu += [
             rumps.MenuItem("⏹  Stop Engine", callback=self._stop),
             rumps.MenuItem("↻  Refresh Models", callback=self._refresh),
+            rumps.MenuItem("🔍  Search Models…", callback=self._open_model_search),
             rumps.MenuItem("⬇  Download from HuggingFace…", callback=self._open_hf_download),
             None,
             self._build_settings_menu(),
@@ -2899,6 +3102,10 @@ class Switchman(rumps.App):
         hide_item = rumps.MenuItem("⊘  Hide", callback=self._on_hide_model)
         hide_item._model_name = name
         parent.add(hide_item)
+
+        delete_item = rumps.MenuItem("🗑  Delete model…", callback=self._on_delete_model)
+        delete_item._model_name = name
+        parent.add(delete_item)
         parent.add(None)
 
         settings_item = rumps.MenuItem("⚙  Settings…", callback=self._open_model_settings)
@@ -2944,28 +3151,23 @@ class Switchman(rumps.App):
         t.start()
 
     def _on_rebuild_timer(self, timer):
-        open("/tmp/ms_bench_log.txt", "a").write(
-            f"rebuild_timer fired pending={self._pending_bench is not None}\n")
         timer.stop()
         self._update_title()
         try:
             self._build_menu()
         except Exception:
-            import traceback
-            open("/tmp/ms_bench_log.txt", "a").write(
-                f"\n_build_menu exception:\n{traceback.format_exc()}\n")
+            import traceback, logging
+            logging.error("_build_menu exception:\n%s", traceback.format_exc())
         if self._start_poll_on_rebuild:
             self._start_poll_on_rebuild = False
             self._start_tps_poll()
         if self._pending_bench:
             args, self._pending_bench = self._pending_bench, None
             try:
-                open("/tmp/ms_bench_log.txt", "a").write("opening results panel\n")
                 run_benchmark_results_panel(*args)
             except Exception:
-                import traceback
-                open("/tmp/ms_bench_log.txt", "a").write(
-                    f"\nresults panel exception:\n{traceback.format_exc()}\n")
+                import traceback, logging
+                logging.error("results panel exception:\n%s", traceback.format_exc())
 
     def _update_title(self):
         if self._loading:
@@ -3009,9 +3211,8 @@ class Switchman(rumps.App):
                 try:
                     run_benchmark_results_panel(*args)
                 except Exception:
-                    import traceback
-                    open("/tmp/ms_bench_log.txt", "a").write(
-                        f"\nresults panel exception:\n{traceback.format_exc()}\n")
+                    import traceback, logging
+                    logging.error("results panel exception:\n%s", traceback.format_exc())
             return
         self._flash_state = not self._flash_state
         label = "Benchmarking…" if self._benchmarking else self._load_status
@@ -3354,6 +3555,62 @@ class Switchman(rumps.App):
             save_config(self._cfg)
         self._build_menu()
 
+    def _on_delete_model(self, sender: rumps.MenuItem):
+        import shutil
+        name = getattr(sender, "_model_name", None)
+        if not name:
+            return
+        entry = self._model_map.get(name)
+        if not entry:
+            return
+        path = Path(entry[0])  # entry is (path, kind)
+        # For a directory model, delete the dir; for a bare .gguf, delete the file
+        if path.is_dir():
+            target = path
+        elif path.is_file():
+            # If the file sits alone in its own directory, delete the directory
+            target = path.parent if list(path.parent.glob("*.gguf")) == [path] else path
+        else:
+            return
+
+        display = self._alias(name) or name
+        size_gb = sum(f.stat().st_size for f in target.rglob("*") if f.is_file()) / 1e9 \
+            if target.is_dir() else target.stat().st_size / 1e9
+        confirm = rumps.alert(
+            title=f"Delete {display}?",
+            message=f"This will permanently delete:\n{target}\n\n{size_gb:.1f} GB will be freed. This cannot be undone.",
+            ok="Delete", cancel="Cancel",
+        )
+        if confirm != 1:
+            return
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        except Exception as e:
+            show_error_alert("Delete failed", str(e))
+            return
+        # Clean up config references
+        for d in (self._cfg["hidden_models"],):
+            if name in d:
+                d.remove(name)
+        self._cfg["model_notes"].pop(name, None)
+        self._cfg["model_params"].pop(name, None)
+        self._cfg["aliases"].pop(name, None)
+        if self._cfg.get("default_model") == name:
+            self._cfg["default_model"] = ""
+        if name in self._cfg.get("recent_models", []):
+            self._cfg["recent_models"].remove(name)
+        if self._active == name:
+            self._active = None
+        save_config(self._cfg)
+        self._model_meta_cache.pop(name, None)
+        self._rebuild_pending = True
+
+    def _open_model_search(self, _):
+        _open_model_search(self)
+
     def _on_benchmark(self, sender: rumps.MenuItem):
         name = getattr(sender, "_model_name", None)
         if not name:
@@ -3416,7 +3673,6 @@ class Switchman(rumps.App):
             finally:
                 log.close()
             save_bench_run(name, bconfig.mode, results)
-            open("/tmp/ms_bench_log.txt", "a").write("setting pending_bench\n")
             self._pending_bench = (name, results, bconfig.mode)
             self._benchmarking = False
             self._loading = False   # flash timer sees this and fires _on_flash_tick on main thread
@@ -3443,6 +3699,20 @@ class Switchman(rumps.App):
             self._hf_download_win, self._hf_download_handler = _make_hf_download_window(self)
             NSApp.activateIgnoringOtherApps_(True)
             self._hf_download_win.makeKeyAndOrderFront_(None)
+            h = self._hf_download_handler
+            h._updateDiskSpace()
+            # Restore interrupted download if one exists
+            pending = load_pending_download()
+            if pending:
+                h._filter_popup.selectItemWithTitle_(pending.get("filter", "MLX"))
+                h.filterChanged_(None)
+                h._dest_fld.setStringValue_(pending.get("dest_dir", ""))
+                h._updateDiskSpace()
+                h._query_fld.setStringValue_(pending.get("repo_id", ""))
+                h._status_lbl.setStringValue_(
+                    "⟳  Resuming interrupted download — click ⬇ Download to continue")
+                h._auto_select_first = True
+                h.search_(None)
 
     def _open_profiles(self, _):
         all_models = sorted(self._model_map.keys())
@@ -3636,6 +3906,24 @@ class _HFDownloadHandler(NSObject):
             "mlx_dir" if tag == "MLX" else "gguf_dir",
             str(Path.home() / "models"))
         self._dest_fld.setStringValue_(d)
+        self._updateDiskSpace()
+
+    def _updateDiskSpace(self):
+        try:
+            import shutil
+            path = Path(self._dest_fld.stringValue().strip()).expanduser()
+            if path.exists():
+                usage = shutil.disk_usage(path)
+                free_gb = usage.free / 1_073_741_824
+                total_gb = usage.total / 1_073_741_824
+                pct_used = (usage.used / usage.total) * 100
+                color_str = "🔴" if pct_used > 90 else ("🟡" if pct_used > 75 else "🟢")
+                self._disk_lbl.setStringValue_(
+                    f"{color_str}  {free_gb:.1f} GB free of {total_gb:.0f} GB")
+            else:
+                self._disk_lbl.setStringValue_("⚠️  Directory not found")
+        except Exception:
+            self._disk_lbl.setStringValue_("")
 
     def resultChanged_(self, _s):
         self._updateInfo()
@@ -3687,6 +3975,8 @@ class _HFDownloadHandler(NSObject):
         self._progress.setMaxValue_(100.0)
         self._progress.setDoubleValue_(0.0)
         self._status_lbl.setStringValue_(f"Fetching size for {repo_id}…")
+        save_pending_download(repo_id, str(dest_dir),
+                              self._filter_popup.titleOfSelectedItem())
 
         def _do():
             try:
@@ -3790,6 +4080,7 @@ class _HFDownloadHandler(NSObject):
         self._dl_poll = None
         self._dl_btn.setEnabled_(True)
         self._downloading = False
+        clear_pending_download()
         if self._dl_error:
             self._progress.setDoubleValue_(0.0)
             self._status_lbl.setStringValue_(f"Error: {self._dl_error}")
@@ -3815,9 +4106,13 @@ class _HFDownloadHandler(NSObject):
         NSApp.activateIgnoringOtherApps_(True)
         if p.runModal() == NSModalResponseOK:
             self._dest_fld.setStringValue_(str(Path(p.URL().path())))
+            self._updateDiskSpace()
 
     def closeWin_(self, _s):
         self._win_ref.orderOut_(None)
+        if self._app_ref is not None:
+            self._app_ref._hf_download_win = None
+            self._app_ref._hf_download_handler = None
 
 
 def _make_hf_tqdm_class(counter):
@@ -3900,14 +4195,30 @@ def _make_hf_tqdm_class(counter):
     return _HFTqdm
 
 
+class _HFWindowDelegate(NSObject):
+    """Clears app refs when the download window is closed via the X button."""
+    def initWithApp_(self, app):
+        self = objc.super(_HFWindowDelegate, self).init()
+        self._app = app
+        return self
+
+    def windowWillClose_(self, note):
+        self._app._hf_download_win = None
+        self._app._hf_download_handler = None
+
+
 def _make_hf_download_window(app):
     """Build the HuggingFace download NSWindow. Returns (win, handler)."""
-    W, H = 640, 300
+    W, H = 640, 320
     win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
     win.setTitle_("Download from HuggingFace")
     win.center()
     cv = win.contentView()
+
+    win_delegate = _HFWindowDelegate.alloc().initWithApp_(app)
+    win.setDelegate_(win_delegate)
+    app._hf_win_delegate = win_delegate  # keep strong ref on app (NSWindow won't accept Python attrs)
 
     handler = _HFDownloadHandler.alloc().init()
     handler._app_ref = app
@@ -3982,6 +4293,18 @@ def _make_hf_download_window(app):
     cv.addSubview_(_btn("Browse…", handler, "browse:",
                         ((W - _PAD - 68, y), (68, _RH))))
 
+    # ── Disk space indicator ───────────────────────────────────────────────────
+    y -= _RH + 2
+    disk_lbl = NSTextField.alloc().initWithFrame_(((_PAD, y), (W - _PAD*2, _RH)))
+    disk_lbl.setStringValue_("")
+    disk_lbl.setBezeled_(False)
+    disk_lbl.setDrawsBackground_(False)
+    disk_lbl.setEditable_(False)
+    disk_lbl.setSelectable_(False)
+    disk_lbl.setFont_(NSFont.systemFontOfSize_(10.0))
+    cv.addSubview_(disk_lbl)
+    handler._disk_lbl = disk_lbl
+
     # ── Progress bar ──────────────────────────────────────────────────────────
     y -= ROW
     from AppKit import NSProgressIndicator
@@ -4006,7 +4329,7 @@ def _make_hf_download_window(app):
     handler._status_lbl = sl
 
     # ── Buttons ───────────────────────────────────────────────────────────────
-    cv.addSubview_(_btn("Close", handler, "closeWin_",
+    cv.addSubview_(_btn("Close", handler, "closeWin:",
                         ((_PAD, _BTN_BOT), (80, _BTN_H))))
     dl_btn = _btn("⬇  Download", handler, "download:",
                   ((W - _PAD - 120, _BTN_BOT), (120, _BTN_H)))

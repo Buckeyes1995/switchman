@@ -1,10 +1,36 @@
 # Switchman
 
-A macOS menu bar app for running local LLM inference. Pick a model from the menu — the right inference engine starts automatically, opencode is reconfigured, and a notification fires when it's ready.
+A macOS menu bar app for managing local LLM inference. Pick a model, it loads — no terminal, no config files, no fuss.
 
-Supports [oMLX](https://github.com/jmorganca/omlx) (MLX models, Apple Silicon) and [llama.cpp](https://github.com/ggerganov/llama.cpp) (GGUF models). Download models directly from HuggingFace. Built with Python + rumps + PyObjC — no Electron, no web views, no cloud.
+Supports **MLX** models via [oMLX](https://github.com/jmorganca/omlx) (Apple Silicon) and **GGUF** models via [llama.cpp](https://github.com/ggerganov/llama.cpp). Built with Python + rumps + PyObjC — no Electron, no web views, no cloud.
 
-> Tested on M2 Max (96 GB) running macOS 15. Apple Silicon required for MLX; GGUF works on any Mac with llama.cpp built from source.
+> Tested on M2 Max (96 GB), macOS 15. Apple Silicon required for MLX; GGUF works on any Mac.
+
+---
+
+## Features
+
+- **One-click model switching** — MLX and GGUF models in the same menu. Switching while loading cancels the previous load immediately.
+- **Live tokens/second** — background poll updates the menu bar title every 10 seconds.
+- **Context usage meter** — shows `42 t/s 14%ctx` in the menu bar and exact counts in the test window.
+- **Default model at startup** — pick any model to auto-load when the app starts.
+- **Download from HuggingFace** — search, preview size, and download directly into your model directory with real-time MB/s progress.
+- **Quick Test Prompt** — floating window to send prompts and stream responses with TTFT, tok/s, and context stats.
+- **Compare mode** — run the same prompt on two models side by side.
+- **Benchmarking** — API benchmark (any model) and llama-bench (GGUF, full parameter sweeps).
+- **Benchmark history** — interactive Chart.js bar chart of all past runs, with CSV export.
+- **Server crash watchdog** — pings `/health` every 30 s; notifies and resets state if the server dies.
+- **Memory pressure indicator** — 🟢/🟡/🔴 badge in the Settings submenu.
+- **Per-model settings** — context length, max tokens, temperature, top_p, top_k, min_p, penalties, GPU layers, thinking mode.
+- **Sampling presets** — one-click Qwen-recommended presets for thinking and instruct modes.
+- **Model notes & aliases** — annotate or rename any model without touching files.
+- **Recent models** — last 5 selections pinned to the top of the menu.
+- **Profiles** — save a parameter set and apply it to any other model in one click.
+- **Hide/unhide models** — declutter the menu without deleting anything.
+- **Copy model ID** — one click to copy the OpenAI-compatible model ID to clipboard.
+- **Global hotkey ⌥Space** — open the menu from anywhere (requires Accessibility permission).
+- **macOS notifications** — fires when a model finishes loading or a server crashes.
+- **opencode / Cursor / Continue.dev sync** *(optional)* — automatically updates coding agent configs on each switch.
 
 ---
 
@@ -14,27 +40,27 @@ Supports [oMLX](https://github.com/jmorganca/omlx) (MLX models, Apple Silicon) a
 |---|---|
 | macOS 13+ | Tested on macOS 14 and 15 |
 | Python 3.13 | `/opt/homebrew/bin/python3.13` |
-| [oMLX](https://github.com/jmorganca/omlx) | MLX model server — optional if you only use GGUF |
-| [llama.cpp](https://github.com/ggerganov/llama.cpp) | Built from source — required for GGUF and llama-bench |
+| [oMLX](https://github.com/jmorganca/omlx) | Only needed for MLX models |
+| [llama.cpp](https://github.com/ggerganov/llama.cpp) | Only needed for GGUF models and llama-bench |
 
 ```bash
 brew install python@3.13
 ```
 
-Python dependencies (installed automatically by `run.sh`): `rumps`, `pyobjc-framework-Cocoa`, `pyobjc-framework-WebKit`, `pyobjc-framework-UserNotifications`, `pyobjc-framework-Quartz`, `huggingface-hub`.
+Python dependencies are installed automatically on first run: `rumps`, `pyobjc-framework-Cocoa`, `pyobjc-framework-WebKit`, `pyobjc-framework-Quartz`, `huggingface-hub`, `requests`.
 
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/switchman.git ~/projects/switchman
+git clone https://github.com/Buckeyes1995/switchman.git ~/projects/switchman
 bash ~/projects/switchman/run.sh
 ```
 
-The first run creates a virtualenv at `.venv/` and installs all dependencies. A `⚡` icon appears in your menu bar.
+First run creates `.venv/` and installs dependencies. A `⚡` icon appears in your menu bar.
 
-### Run as a login item (launchd)
+### Run at login (launchd)
 
 Create `~/Library/LaunchAgents/com.yourname.switchman.plist`:
 
@@ -44,8 +70,7 @@ Create `~/Library/LaunchAgents/com.yourname.switchman.plist`:
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key>
-  <string>com.yourname.switchman</string>
+  <key>Label</key>       <string>com.yourname.switchman</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
@@ -72,47 +97,15 @@ Logs: `~/Library/Logs/switchman.log`
 
 ## First-Time Setup
 
-1. `bash run.sh` — launches the app
-2. Click `⚡` in the menu bar
-3. **⚙ Settings → Open Settings…**
-4. Set **MLX models directory** and/or **GGUF models directory**
-5. Set **oMLX service name** and **API key** (if using MLX)
-6. Set **llama-server path** (if using GGUF)
-7. **Save**
-8. **↻ Refresh Models** — your models appear
+1. `bash run.sh` — app launches, `⚡` appears in the menu bar
+2. Click `⚡` → **⚙ Settings → Open Settings…**
+3. Set your **MLX models directory** and/or **GGUF models directory**
+4. For MLX: set **oMLX port** and **API key** (if your server uses one)
+5. For GGUF: set the path to your **llama-server** binary
+6. Click **Save**
+7. Click **↻ Refresh Models** — your models appear in the menu
 
-Or use **⬇ Download from HuggingFace…** to grab a model directly.
-
----
-
-## Configuration
-
-Stored at `~/.config/switchman/config.json`. All fields are editable via **⚙ Settings → Open Settings…**.
-
-```json
-{
-  "mlx_dir":          "/path/to/models/mlx/",
-  "gguf_dir":         "/path/to/models/gguf/",
-  "omlx_port":        8000,
-  "omlx_api_key":     "your-key",
-  "omlx_service":     "com.yourname.omlx",
-  "llama_server":     "~/.local/llama.cpp/build/bin/llama-server",
-  "llama_port":       8000,
-  "opencode_config":  "~/.config/opencode/opencode.json",
-  "restart_opencode": false,
-  "terminal_app":     "iTerm2",
-  "default_model":    "",
-  "aliases":          {},
-  "model_notes":      {},
-  "hidden_models":    [],
-  "model_params":     {},
-  "recent_models":    [],
-  "sync_cursor":      false,
-  "sync_continue":    false,
-  "sync_env":         true,
-  "notifications":    true
-}
-```
+**Don't have oMLX or llama.cpp yet?** Use **⬇ Download from HuggingFace…** to grab a GGUF model first, then [build llama.cpp from source](https://github.com/ggerganov/llama.cpp#build) to serve it. No opencode or other tools required.
 
 ---
 
@@ -135,8 +128,8 @@ Each subdirectory is one model:
 ```
 /path/to/gguf/
   ModelName/
-    ModelName.gguf     ← directory name used as display name
-  standalone.gguf      ← file stem used as display name
+    ModelName.gguf      ← directory name used as display name
+  standalone.gguf       ← file stem used as display name
 ```
 
 Multi-shard models: only the first shard (`-00001-of-NNNNN`) is shown. Files containing `mmproj` are skipped.
@@ -145,131 +138,59 @@ Multi-shard models: only the first shard (`-00001-of-NNNNN`) is shown. Files con
 
 ## Feature Reference
 
-### Menu Bar Icon
+### Menu Bar Title
 
 | Title | Meaning |
 |---|---|
 | `⚡` | Idle — no model loaded |
 | `⚡ ModelName` | Model active |
-| `⚡ 42 t/s` | Model active — live tokens/second |
-| `⚡ 42 t/s 14%ctx` | Tok/s + context usage percentage |
+| `⚡ 42 t/s` | Model active, live throughput |
+| `⚡ 42 t/s 14%ctx` | Throughput + context usage |
 | `⚡🔴 42 t/s` | Active — memory pressure critical |
 | `Loading weights…` ↔ `⚡` | Model loading (animated) |
 | `Benchmarking…` ↔ `⚡` | Benchmark running (animated) |
 
----
-
-### Loading Step Detail
-
-The menu bar title shows the current stage while loading:
-
-| Stage | What's happening |
-|---|---|
-| `Stopping engine…` | Killing previous server, waiting for port |
-| `Starting oMLX…` | Bootstrapping the oMLX launchd service |
-| `Loading default model…` | Auto-loading the startup default |
-| `Starting llama-server…` | Spawning llama-server subprocess |
-| `Loading weights…` | Waiting for model to respond to first request |
-| `Warming up…` | 128-token generation to pull weights into unified memory (MLX) |
+Loading stages shown in the title: `Stopping engine…` → `Starting oMLX…` / `Starting llama-server…` → `Loading weights…` → `Warming up…`
 
 ---
 
 ### Model Switching
 
-Click any model → **▶ Select**. Selecting a model while another is loading immediately cancels the previous load — no need to wait.
-
-**MLX (via oMLX):**
-1. Kill any running llama-server
-2. Ensure oMLX is healthy; start/restart if needed
-3. Send 1-token completions until the correct model responds (up to 5 min)
-4. Send a 128-token warm-up to pull SSD-cached weights into unified memory
-5. Write to opencode config, sync clients, fire notification
-
-**GGUF (via llama-server):**
-1. Kill any running llama-server
-2. Stop oMLX (launchd bootout + wait for port)
-3. Spawn `llama-server -m <path> --port <port> -ngl <layers> -c <ctx>`
-4. Wait for server to accept connections
-5. Query `/v1/models` for the server's reported model ID
-6. Write to opencode config, sync clients, fire notification
+Click any model → **▶ Select**. Selecting a model while another is loading immediately supersedes it — no waiting.
 
 **⏹ Stop Engine** — kills the active server and frees unified memory.
 
-**↻ Refresh Models** — rescans model directories without restarting.
+**↻ Refresh Models** — rescans directories without restarting the app.
 
 ---
 
 ### Default Model at Startup
 
-Set a model to load automatically whenever Switchman starts.
-
-Hover a model → **★ Default at startup** to set it. Click again to clear. The default model shows `★` to its left in the menu.
-
-On launch, if a default is set and no server is already running, Switchman begins loading it immediately using the same path as a manual selection — flash animation, notification when ready.
+Hover any model → **★ Default at startup** to set it; click again to clear. The starred model loads automatically on every launch. It shows `★` to its left in the menu.
 
 ---
 
-### Live Tokens/Second
+### Live Tokens/Second + Context Meter
 
-While a model is active, a background poll runs every 10 seconds: sends an 8-token completion and measures wall-clock throughput. The menu bar title updates to `⚡ 42 t/s`.
-
----
-
-### Context Usage Meter
-
-After each request (poll or Quick Test), Switchman shows how much of the context window has been used:
-
-- **Menu bar:** `⚡ 42 t/s 14%ctx` — percentage of context used
-- **Quick Test window:** `TTFT 340ms | 42.1 tok/s (128 tokens) | ctx 4,096/32,768 (13%)`
-
-Context usage resets when you switch models.
+A background poll runs every 10 seconds while a model is active. The menu bar title updates to `⚡ 42 t/s`. After each request, context usage appears: `⚡ 42 t/s 14%ctx`.
 
 ---
 
 ### Server Crash Watchdog
 
-A background timer pings `/health` every 30 seconds while a model is active. If the server stops responding, Switchman:
-
-- Clears the active model
-- Resets the menu to idle
-- Fires a notification: "Inference server stopped unexpectedly"
-
-Catches oMLX crashes, OOM kills, and manual `pkill` automatically.
+Pings `/health` every 30 seconds. If the server stops responding, Switchman clears the active model and fires a notification: *"Inference server stopped unexpectedly"*.
 
 ---
 
-### Memory Pressure Indicator
+### Memory Pressure
 
-Shown in **⚙ Settings** submenu, polled every 30 seconds:
-
-| Badge | Meaning |
-|---|---|
-| 🟢 nominal | Unified memory available |
-| 🟡 warn | Pressure elevated |
-| 🔴 critical | System swapping — model performance degraded |
-
-🔴 also appears in the menu bar title when critical.
+Polled every 30 seconds from `sysctl`. Shown as 🟢/🟡/🔴 in the Settings submenu and as 🔴 in the menu bar title when critical.
 
 ---
 
 ### Model Metadata
 
-Each model shows metadata parsed in a background thread at startup:
-
-- **arch** — model architecture (`qwen3`, `llama`, etc.)
-- **ctx** — context window (`32,768`)
-- **quant** — quantization type (`Q8_0`, `IQ4_XS`, `6bit`, etc.)
-- **size** — file size on disk in GB
-
-GGUF: reads first 8 KB of the binary header only (never loads the whole file). MLX: reads `config.json`.
-
----
-
-### Model Notes
-
-Attach a free-text note to any model. Appears in the menu as `📝 note text`.
-
-Hover a model → **⚙ Settings…** → **Note** field → **Save**.
+Parsed in a background thread at startup — arch, context window, quantization, and disk size. Displayed in the menu under each model name. GGUF metadata is read from the binary header only (first 8 KB); MLX from `config.json`.
 
 ---
 
@@ -289,66 +210,25 @@ Hover any model → **⚙ Settings…**
 | Presence penalty | 1.5 | MLX + GGUF |
 | Repetition penalty | 1.0 | MLX + GGUF |
 | Enable thinking | off | MLX only |
-| Alias | — | display name |
-| Note | — | menu annotation |
+| Alias | — | display name override |
+| Note | — | annotation shown in menu |
 
----
+**Sampling presets** (one-click, from Qwen docs):
 
-### Sampling Presets
-
-One-click presets in the per-model settings panel (from Qwen documentation):
-
-| Preset | temp | top_p | top_k | presence | Thinking |
-|---|---|---|---|---|---|
-| Thinking — General | 1.0 | 0.95 | 20 | 1.5 | ✓ |
-| Thinking — Coding | 0.6 | 0.95 | 20 | 0.0 | ✓ |
-| Instruct — General | 0.7 | 0.8 | 20 | 1.5 | ✗ |
-| Instruct — Reasoning | 1.0 | 1.0 | 40 | 2.0 | ✗ |
-
----
-
-### Aliases
-
-Rename any model for display without touching files. Appears everywhere: menu, menu bar title, benchmarks, opencode config.
-
-Per-model **⚙ Settings…** → **Alias** field.
-
----
-
-### Hide / Unhide
-
-Hover a model → **⊘ Hide** to remove it from the main list. Hidden models move to **⊘ Hidden (N)** at the bottom. Click any hidden model to restore it.
-
----
-
-### Recent Models
-
-The top section of the menu shows the last 5 models you switched to, most recent first. Click any to switch immediately.
-
----
-
-### Profiles
-
-Save any model's current parameter set as a named profile, then apply it to any other model in one click.
-
-- **Save:** Per-model **⚙ Settings…** → **Save as Profile…**
-- **Apply:** Menu bar → **── Profiles ──** → click a profile name
-
-Profiles stored at `~/.config/switchman/profiles.json`.
-
----
-
-### Copy Model ID
-
-Hover a model → **⎘ Copy model ID** — copies `omlx/ModelName` to the clipboard. Paste directly into opencode, Continue.dev, Cursor, or any OpenAI-compatible client.
+| Preset | temp | top_p | top_k | Thinking |
+|---|---|---|---|---|
+| Thinking — General | 1.0 | 0.95 | 20 | ✓ |
+| Thinking — Coding | 0.6 | 0.95 | 20 | ✓ |
+| Instruct — General | 0.7 | 0.8 | 20 | ✗ |
+| Instruct — Reasoning | 1.0 | 1.0 | 40 | ✗ |
 
 ---
 
 ### Quick Test Prompt
 
-**⚙ Settings → Quick Test Prompt…** — a floating non-modal window. Type a prompt, click **Send** (or press Return). Response streams in real time with live tok/s, TTFT, and context usage shown below.
+**⚙ Settings → Quick Test Prompt…** — floating window. Type a prompt, press Return or click **Send**. Response streams in real time with TTFT, tok/s, and context stats below.
 
-**Compare mode:** Check **Compare models** to show a second model's response side-by-side. oMLX lazy-loads both on demand.
+**Compare mode:** Check **Compare models** to run the same prompt on a second model side by side.
 
 ---
 
@@ -356,56 +236,14 @@ Hover a model → **⎘ Copy model ID** — copies `omlx/ModelName` to the clipb
 
 **⬇ Download from HuggingFace…** in the main menu.
 
-1. Select **MLX** or **GGUF** — the save directory automatically switches to your configured model dir
-2. Type a search query (e.g. `Qwen3`, `llama`, `mistral`) and click **Search**
-3. Results are sorted by **source org → model name → parameter count → quant quality**. Each entry shows `[7B, Q4_K_M]` and size in GB
+1. Select **MLX** or **GGUF** — the save directory switches automatically
+2. Type a search query and click **Search**
+3. Results are sorted by **source org → model name → parameter count → quant quality**
 4. Select a result — info line shows total size, download count, and likes
-5. Adjust **Save to** if needed (defaults to your MLX or GGUF directory)
+5. Adjust **Save to** directory if needed
 6. Click **⬇ Download**
 
-Progress shows `X.XX / Y.YY GB  (N%)  Z.Z MB/s`, updated every second by measuring bytes written to disk. When complete, the model list refreshes automatically and metadata is populated.
-
----
-
-### opencode Integration
-
-On every model switch, Switchman writes to `~/.config/opencode/opencode.json`:
-
-- Adds the model ID to `provider.omlx.models`
-- Sets `"model": "omlx/<model_id>"`
-- Writes context length, max tokens, and sampling parameters
-
-Both MLX and GGUF point to the same `omlx` provider (same port).
-
-**Auto-restart opencode:** Enable in Global Settings. On each switch, Switchman finds running opencode processes, closes their terminal windows via AppleScript, kills the processes, then re-opens a new terminal window per unique working directory. Supports iTerm2 and Terminal.app.
-
----
-
-### Client Sync
-
-| Setting | Effect |
-|---|---|
-| **Sync env file** (on by default) | Writes `~/.config/switchman/env` with `MODEL_ID=omlx/<name>` |
-| **Sync Cursor MCP** | Updates Cursor's MCP config |
-| **Sync Continue.dev** | Updates Continue.dev's config |
-
-Configure in **⚙ Settings → Open Settings…**.
-
----
-
-### macOS Notifications
-
-Fires when a model finishes loading ("Model ready: ModelName") and when the server crashes unexpectedly. Toggle in **⚙ Settings → Open Settings…**.
-
-On first run, macOS prompts for notification permission. If you dismissed it: System Settings → Notifications → Switchman.
-
----
-
-### Global Hotkey ⌥Space
-
-Press **Option+Space** from anywhere to open the Switchman menu without clicking the menu bar.
-
-**Setup required:** System Settings → Privacy & Security → Accessibility → add Python to the list. Without it, the hotkey silently does nothing.
+Progress shows `X.XX / Y.YY GB  (N%)  Z.Z MB/s` updated every second. When complete, the model list refreshes automatically. Downloads resume from where they left off if interrupted. Error text is selectable for copy/paste.
 
 ---
 
@@ -413,113 +251,125 @@ Press **Option+Space** from anywhere to open the Switchman menu without clicking
 
 Hover any model → **⏱ Benchmark…**
 
-For API benchmarks, the model must already be loaded (GGUF always; MLX lazy-loads on first request). For llama-bench, all servers are stopped first to free unified memory.
-
 #### API Benchmark
 
-Sends completions via the OpenAI-compatible API. Supports:
-- Multiple prompts from the built-in library (Short 32t / Medium 128t / Long 512t / Coding / Reasoning)
-- Thinking sweep: Off / On / Both (MLX only)
-- Gen token sweep: comma-separated values e.g. `128,512,1024`
-- Multiple repetitions
+Sends completions via the OpenAI-compatible API. Supports prompt library (Short/Medium/Long/Coding/Reasoning), thinking sweep (MLX), gen token sweep, and multiple repetitions. Metrics: tok/s, TTFT, wall time.
 
-Metrics: tokens/second, wall time, TTFT.
+#### llama-bench *(GGUF only)*
 
-#### llama-bench (GGUF only)
+Runs `llama-bench` with full parameter sweeps — batch size, ubatch, flash attention, KV cache quantization, prompt/gen tokens, repetitions. A live window streams output. Partial results are recovered on failure.
 
-Runs llama.cpp's `llama-bench` with full parameter sweeps:
-
-| Parameter | Description |
-|---|---|
-| Batch sizes (`-b`) | e.g. `512,2048` |
-| Ubatch sizes (`-ub`) | e.g. `512` |
-| Flash attention | Off / On / Both |
-| Cache type K | f16, q8_0, q4_0, q4_1, q5_0, q5_1 |
-| Cache type V | Hardcoded f16 — see Known Limitations |
-| Prompt tokens | `-np` |
-| Gen tokens | `-ng` |
-| Repetitions | `-r` |
-
-A live progress window streams llama-bench output. Partial results are recovered even if a combination fails.
-
-#### Edit Prompts
-
-**⚙ Settings → Open Settings…** → **Edit Prompts…** — in-app editor for the benchmark prompt library. Stored at `~/.config/switchman/benchmark_prompts.json`.
+**Edit Prompts:** **⚙ Settings → Open Settings… → Edit Prompts…** — in-app editor for the benchmark prompt library (`~/.config/switchman/benchmark_prompts.json`).
 
 ---
 
 ### Benchmark History
 
-**⚙ Settings → Benchmark History…** — interactive Chart.js bar chart of all past runs, grouped by model and phase. Buttons:
+**⚙ Settings → Benchmark History…** — Chart.js bar chart of all past runs, grouped by model and phase.
 
 - **Clear History** — deletes all saved results
-- **Export CSV** — saves all results to a `.csv` file (date, model, mode, label, tok/s, tokens, time, error)
+- **Export CSV** — date, model, mode, label, tok/s, tokens, time, error
 
 History stored at `~/.config/switchman/bench_history.json`.
 
 ---
 
-### Error Dialogs
+### Profiles
 
-Engine failures show a native macOS alert describing what failed and where to find logs, instead of silently stopping the loading animation.
+Save a model's parameter set as a named profile, then apply it to any model in one click.
+
+- **Save:** Per-model **⚙ Settings…** → **Save as Profile…**
+- **Apply:** Menu bar → **── Profiles ──** → click a profile
+
+Stored at `~/.config/switchman/profiles.json`.
 
 ---
 
-## Sampling Parameter Translation
+### Other Menu Actions
 
-| Config key | oMLX field | llama-server field |
-|---|---|---|
-| `temperature` | `temperature` | `temperature` |
-| `top_p` | `top_p` | `top_p` |
-| `top_k` | *(dropped)* | `top_k` |
-| `min_p` | `min_p` | `min_p` |
-| `presence_penalty` | `frequency_penalty` | `presence_penalty` |
-| `repetition_penalty` | `repetition_penalty` | `repeat_penalty` |
+| Action | How |
+|---|---|
+| **Copy model ID** | Hover model → **⎘ Copy model ID** → pastes `omlx/ModelName` |
+| **Hide model** | Hover model → **⊘ Hide** (restore from **⊘ Hidden** at bottom) |
+| **Recent models** | Last 5 selections pinned to the top of the menu |
+| **Model notes** | Hover model → **⚙ Settings…** → Note field |
+| **Aliases** | Hover model → **⚙ Settings…** → Alias field |
+
+---
+
+### Global Hotkey ⌥Space
+
+Press **Option+Space** from anywhere to open the Switchman menu.
+
+**One-time setup required:** System Settings → Privacy & Security → Accessibility → add Python.
+
+---
+
+### Notifications
+
+Fires when a model finishes loading and when a server crashes. Toggle in **⚙ Settings → Open Settings…**.
+
+---
+
+## opencode / IDE Integration *(Optional)*
+
+Switchman works standalone — opencode is not required. If you use opencode, Cursor, or Continue.dev, Switchman can keep them in sync automatically.
+
+On each model switch, Switchman can:
+- Write the active model to `~/.config/opencode/opencode.json`
+- Write `~/.config/switchman/env` (`MODEL_ID=omlx/<name>`) for shell scripts
+- Update Cursor MCP config
+- Update Continue.dev config
+- Kill and relaunch opencode in your terminal (iTerm2 or Terminal.app)
+
+Configure in **⚙ Settings → Open Settings…**. All sync options are off by default.
+
+---
+
+## Configuration
+
+Stored at `~/.config/switchman/config.json`. Edited via **⚙ Settings → Open Settings…**.
+
+```json
+{
+  "mlx_dir":          "/path/to/models/mlx/",
+  "gguf_dir":         "/path/to/models/gguf/",
+  "omlx_port":        8000,
+  "omlx_api_key":     "",
+  "omlx_service":     "com.yourname.omlx",
+  "llama_server":     "~/.local/llama.cpp/build/bin/llama-server",
+  "llama_port":       8000,
+  "default_model":    "",
+  "notifications":    true,
+  "opencode_config":  "~/.config/opencode/opencode.json",
+  "restart_opencode": false,
+  "terminal_app":     "iTerm2",
+  "sync_cursor":      false,
+  "sync_continue":    false,
+  "sync_env":         true,
+  "aliases":          {},
+  "model_notes":      {},
+  "hidden_models":    [],
+  "model_params":     {},
+  "recent_models":    []
+}
+```
 
 ---
 
 ## Known Limitations
 
-### Metal KV Cache Quantization
+**Metal KV cache quantization** — quantized V-cache (`ctv != f16`) crashes the Metal backend on all Apple Silicon tested. `ctv` is hardcoded to `f16`. K-cache quant works on most models.
 
-Quantized V-cache (`ctv != f16`) crashes the Metal backend on all Apple Silicon models tested ("failed to create context" before loading begins). **ctv is hardcoded to f16**. K-cache quant (`ctk`) works on most models; exceptions include models with unusual head dimensions. Re-test after llama.cpp updates.
+**MLX active model after restart** — oMLX doesn't expose which model is loaded. After restarting Switchman, `_active` is unknown until you select a model. GGUF detection works fine.
 
-### oMLX Active Model Detection
-
-oMLX 0.3.x removed `/v1/models/status`. Switchman cannot detect which MLX model is loaded after an app restart — `_active` starts as None until you select a model. GGUF detection works because llama-server's `/v1/models` returns exactly the one loaded model.
-
-### Multiple opencode Windows
-
-When **Restart opencode** is enabled with multiple windows open across different directories, one window per unique CWD is reopened. Tested with a single window only.
-
-### Global Hotkey Accessibility
-
-⌥Space requires explicit Accessibility permission. System Settings → Privacy & Security → Accessibility.
+**Global hotkey** — requires Accessibility permission; silently does nothing without it.
 
 ---
 
 ## Architecture
 
-Single-file Python app (`switchman.py`, ~3,600 lines) using `rumps` for the menu bar and `PyObjC` for native macOS panels.
-
-### Threading
-
-All AppKit/rumps callbacks run on the **main thread**. Background work (engine switching, benchmarking, metadata parsing, HTTP, disk polling) runs in daemon threads.
-
-Main-thread re-entry from background threads: set `self._rebuild_pending = True`. A 1-second idle timer (`_on_idle_tick`) polls this flag and calls `_build_menu()`. Never create `rumps.Timer` from a background thread — it silently does nothing.
-
-### Switch Token
-
-Every model selection increments `_switch_token`. Each engine thread captures the token at start and checks it before every blocking operation. If the user selects a different model, the old thread detects the changed token and exits without touching `_active` or `_loading` — no race, no stale state.
-
-### Engine Selection
-
-| Model type | Engine | Default port |
-|---|---|---|
-| `.../mlx/ModelName/` | oMLX (launchd service) | 8000 |
-| `.../gguf/Model.gguf` | llama-server (subprocess) | 8000 |
-
-Both present an OpenAI-compatible API. opencode always points at `omlx/<model_id>`.
+Single-file Python app (`switchman.py`) using `rumps` for the menu bar and `PyObjC` for native macOS panels. All AppKit callbacks run on the main thread. Background threads (switching, benchmarking, metadata, HTTP) communicate back via a `_rebuild_pending` flag polled by a 1-second idle timer. A switch token pattern prevents race conditions when selections overlap.
 
 ---
 
@@ -530,13 +380,11 @@ Both present an OpenAI-compatible API. opencode always points at `omlx/<model_id
 /opt/homebrew/bin/python3.13 -c "import ast; ast.parse(open('switchman.py').read())"
 
 # Run directly (logs to stdout)
-.venv/bin/python3 switchman.py
+.venv/bin/python switchman.py
 
 # Restart launchd instance
 launchctl kickstart -k gui/$(id -u)/com.yourname.switchman
 ```
-
-See `CLAUDE.md` for PyObjC pitfalls and architecture notes.
 
 ---
 
