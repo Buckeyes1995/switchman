@@ -12,6 +12,14 @@ Features planned, in rough priority order. Contributions welcome.
 
 ## Visual Polish
 
+### ~~Titlebar Transparency~~ ✓ Done
+~~Call `setTitlebarAppearsTransparent_(True)` and `setMovableByWindowBackground_(True)`~~
+Applied to all 12 panels and windows.
+
+### ~~Accent-Colored Primary Buttons~~ ✓ Done
+~~Use `NSColor.controlAccentColor()` on primary action buttons~~
+Save / Run Benchmark buttons now use the system accent color.
+
 ### NSVisualEffectView Vibrancy Backgrounds
 Replace the plain gray window backgrounds on all panels (Settings, per-model Settings, Benchmark, Quick Test) with `NSVisualEffectView` using `.sidebar` or `.hudWindow` material. Gives the frosted-glass translucency that native Mac apps use. One `NSVisualEffectView` as the root content view of each panel; existing subviews stay the same.
 
@@ -61,8 +69,9 @@ Before loading a model, estimate how much unified memory it will consume based o
 ### Prompt History in Quick Test
 Up/down arrow keys in the Quick Test window cycle through previous prompts, like a shell history. Stored in `~/.config/switchman/prompt_history.json`.
 
-### Export / Import Settings
-One-click export of the full config — model parameters, profiles, aliases, notes, prompts — to a single JSON file. Import on another machine to restore everything.
+### ~~Export / Import Settings~~ ✓ Done
+~~One-click export of the full config to a single JSON file.~~
+Available under ⚙ Settings → Export Settings… / Import Settings…
 
 ### Scheduled Model Switching
 Define a schedule (e.g., fast small model during the day, large model overnight). Uses launchd or a background timer. Useful when large models need quiet time to load into unified memory.

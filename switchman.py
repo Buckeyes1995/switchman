@@ -152,6 +152,15 @@ def _btn(title: str, target, action: str, frame,
     return b
 
 
+def _primary_btn(title: str, target, action: str, frame,
+                 key_eq: str | None = None) -> NSButton:
+    """Primary action button with system accent color."""
+    from AppKit import NSColor
+    b = _btn(title, target, action, frame, key_eq)
+    b.setBezelColor_(NSColor.controlAccentColor())
+    return b
+
+
 def _browse_btn(target, field: NSTextField,
                 choose_dir: bool, frame) -> NSButton:
     """Browse button wired to open a file/folder picker for `field`.
@@ -468,6 +477,8 @@ def _make_test_prompt_window(app) -> NSWindow:
         ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
     win.setTitle_("Quick Test Prompt")
     win.center()
+    win.setTitlebarAppearsTransparent_(True)
+    win.setMovableByWindowBackground_(True)
     cv = win.contentView()
 
     handler = _TestPromptHandler.alloc().init()
@@ -596,6 +607,8 @@ def run_settings_panel(cfg: dict) -> bool:
     panel.setTitle_("Switchman — Settings")
     panel.setDelegate_(handler)
     panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     cv = panel.contentView()
     fields: dict[str, NSTextField] = {}
     cur = _PAD  # pixels from top, advances downward
@@ -678,7 +691,7 @@ def run_settings_panel(cfg: dict) -> bool:
     # ── Buttons ──
     cv.addSubview_(_btn("Cancel", handler, "stopCancel:",
                         ((W - _PAD - 152, _BTN_BOT), (72, _BTN_H)), "\x1b"))
-    cv.addSubview_(_btn("Save", handler, "stopOK:",
+    cv.addSubview_(_primary_btn("Save", handler, "stopOK:",
                         ((W - _PAD - 74, _BTN_BOT), (66, _BTN_H)), "\r"))
 
     NSApp.activateIgnoringOtherApps_(True)
@@ -727,6 +740,8 @@ def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
     panel.setTitle_(f"Settings — {name}")
     panel.setDelegate_(handler)
     panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     cv = panel.contentView()
 
     p = model_params(cfg, name)
@@ -816,7 +831,7 @@ def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
     # ── Buttons ──
     cv.addSubview_(_btn("Cancel", handler, "stopCancel:",
                         ((W - _PAD - 152, _BTN_BOT), (72, _BTN_H)), "\x1b"))
-    cv.addSubview_(_btn("Save", handler, "stopOK:",
+    cv.addSubview_(_primary_btn("Save", handler, "stopOK:",
                         ((W - _PAD - 74, _BTN_BOT), (66, _BTN_H)), "\r"))
 
     NSApp.activateIgnoringOtherApps_(True)
@@ -914,6 +929,8 @@ def run_edit_prompts_panel() -> None:
     panel.setTitle_("Edit Benchmark Prompts")
     panel.setDelegate_(handler)
     panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     cv = panel.contentView()
 
     # ── Outer scroll view ──
@@ -979,7 +996,7 @@ def run_edit_prompts_panel() -> None:
     cv.addSubview_(note)
     cv.addSubview_(_btn("Cancel", handler, "stopCancel:",
                         ((W - _PAD - 162, 14), (82, 28)), "\x1b"))
-    cv.addSubview_(_btn("Save", handler, "stopOK:",
+    cv.addSubview_(_primary_btn("Save", handler, "stopOK:",
                         ((W - _PAD - 74, 14), (60, 28)), "\r"))
 
     NSApp.activateIgnoringOtherApps_(True)
@@ -1043,6 +1060,8 @@ def run_benchmark_config_panel(name: str, kind: str, cfg: dict) -> BenchmarkConf
     panel.setTitle_(f"Benchmark — {name}  ({mode_label})")
     panel.setDelegate_(handler)
     panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     cv = panel.contentView()
 
     x_lbl = _PAD
@@ -1195,7 +1214,7 @@ def run_benchmark_config_panel(name: str, kind: str, cfg: dict) -> BenchmarkConf
     cv.addSubview_(edit_btn)
     cv.addSubview_(_btn("Cancel", handler, "stopCancel:",
                         ((W - _PAD - 162, _BTN_BOT), (82, _BTN_H)), "\x1b"))
-    cv.addSubview_(_btn("Run Benchmark", handler, "stopOK:",
+    cv.addSubview_(_primary_btn("Run Benchmark", handler, "stopOK:",
                         ((W - _PAD - 74, _BTN_BOT), (66, _BTN_H)), "\r"))
 
     NSApp.activateIgnoringOtherApps_(True)
@@ -1680,6 +1699,8 @@ def run_benchmark_results_panel(name: str, results: list[BenchmarkResult],
     panel.setTitle_(f"Benchmark Results — {name}")
     panel.setDelegate_(handler)
     panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     cv = panel.contentView()
 
     web_rect = ((_PAD, _BTN_BOT + _BTN_H + _PAD),
@@ -1814,6 +1835,8 @@ def run_bench_history_panel() -> None:
     panel.setTitle_("Benchmark History")
     panel.setDelegate_(handler)
     panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     cv = panel.contentView()
     web_h = H - _BTN_BOT - _BTN_H - _PAD * 2
     wv = WKWebView.alloc().initWithFrame_configuration_(
@@ -1890,6 +1913,8 @@ def run_create_profile_panel(all_models: list[str],
     panel.setTitle_("New Profile")
     panel.setDelegate_(handler)
     panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     cv = panel.contentView()
 
     def fy(t, h=_RH): return H - t - h
@@ -1912,7 +1937,7 @@ def run_create_profile_panel(all_models: list[str],
     cv.addSubview_(preset_popup)
     cv.addSubview_(_btn("Cancel", handler, "stopCancel:",
                         ((W - _PAD - 162, _BTN_BOT), (82, _BTN_H)), "\x1b"))
-    cv.addSubview_(_btn("Save", handler, "stopOK:",
+    cv.addSubview_(_primary_btn("Save", handler, "stopOK:",
                         ((W - _PAD - 74, _BTN_BOT), (60, _BTN_H)), "\r"))
     NSApp.activateIgnoringOtherApps_(True)
     panel.makeKeyAndOrderFront_(None)
@@ -2591,6 +2616,8 @@ def _open_model_search(app) -> None:
     panel.setTitle_("Switch Model")
     panel.center()
     panel.setLevel_(8)  # NSFloatingWindowLevel
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     cv = panel.contentView()
 
     y = H - _PAD
@@ -3145,6 +3172,9 @@ class Switchman(rumps.App):
         s.add(None)
         s.add(rumps.MenuItem("  Quick Test Prompt…", callback=self._open_test_prompt))
         s.add(rumps.MenuItem("  Benchmark History…", callback=self._open_bench_history))
+        s.add(None)
+        s.add(rumps.MenuItem("  Export Settings…", callback=self._export_settings))
+        s.add(rumps.MenuItem("  Import Settings…", callback=self._import_settings))
         return s
 
     
@@ -3474,6 +3504,8 @@ class Switchman(rumps.App):
             ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
         win.setTitle_(f"Benchmarking — {name}")
         win.center()
+        win.setTitlebarAppearsTransparent_(True)
+        win.setMovableByWindowBackground_(True)
         cv = win.contentView()
 
         tf = NSTextField.alloc().initWithFrame_(
@@ -3521,6 +3553,41 @@ class Switchman(rumps.App):
         if run_settings_panel(self._cfg):
             save_config(self._cfg)
             self._build_menu()
+
+    def _export_settings(self, _):
+        from AppKit import NSSavePanel
+        panel = NSSavePanel.savePanel()
+        panel.setTitle_("Export Switchman Settings")
+        panel.setNameFieldStringValue_("switchman-settings.json")
+        panel.setAllowedFileTypes_(["json"])
+        NSApp.activateIgnoringOtherApps_(True)
+        if panel.runModal() == NSModalResponseOK:
+            path = Path(panel.URL().path())
+            path.write_text(json.dumps(self._cfg, indent=2, default=list))
+
+    def _import_settings(self, _):
+        from AppKit import NSOpenPanel
+        panel = NSOpenPanel.openPanel()
+        panel.setTitle_("Import Switchman Settings")
+        panel.setAllowedFileTypes_(["json"])
+        panel.setCanChooseFiles_(True)
+        panel.setCanChooseDirectories_(False)
+        NSApp.activateIgnoringOtherApps_(True)
+        if panel.runModal() == NSModalResponseOK:
+            path = Path(panel.URL().path())
+            try:
+                imported = json.loads(path.read_text())
+                if not isinstance(imported, dict):
+                    raise ValueError("not a dict")
+                # Merge: preserve current paths, overlay everything else
+                for key, val in imported.items():
+                    if key not in ("mlx_dir", "gguf_dir", "llama_server",
+                                   "omlx_port", "omlx_api_key", "omlx_service"):
+                        self._cfg[key] = val
+                save_config(self._cfg)
+                self._build_menu()
+            except Exception as e:
+                show_error_alert("Import failed", str(e))
 
     def _open_model_settings(self, sender: rumps.MenuItem):
         name = getattr(sender, "_model_name", None)
@@ -3843,6 +3910,8 @@ class Switchman(rumps.App):
         win.setTitle_("Manage Visible Models")
         win.setLevel_(3)
         win.center()
+        win.setTitlebarAppearsTransparent_(True)
+        win.setMovableByWindowBackground_(True)
         cv = win.contentView()
 
         # ── Scroll area with checkboxes ──────────────────────────────────────
@@ -4419,6 +4488,8 @@ def _make_hf_download_window(app):
         ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
     win.setTitle_("Download from HuggingFace")
     win.center()
+    win.setTitlebarAppearsTransparent_(True)
+    win.setMovableByWindowBackground_(True)
     cv = win.contentView()
 
     win_delegate = _HFWindowDelegate.alloc().initWithApp_(app)
