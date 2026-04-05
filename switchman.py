@@ -120,6 +120,7 @@ class BenchmarkResult:
 
 def _lbl(text: str, frame, bold: bool = False, right: bool = True) -> NSTextField:
     """Non-editable label."""
+    from AppKit import NSColor
     f = NSTextField.alloc().initWithFrame_(frame)
     f.setStringValue_(text)
     f.setBezeled_(False)
@@ -128,7 +129,10 @@ def _lbl(text: str, frame, bold: bool = False, right: bool = True) -> NSTextFiel
     f.setSelectable_(False)
     f.setAlignment_(1 if right else 0)   # 1 = NSRightTextAlignment
     if bold:
-        f.setFont_(NSFont.boldSystemFontOfSize_(11))
+        f.setFont_(NSFont.boldSystemFontOfSize_(12))
+        f.setTextColor_(NSColor.controlAccentColor())
+    else:
+        f.setTextColor_(NSColor.labelColor())
     return f
 
 
@@ -153,6 +157,20 @@ def _btn(title: str, target, action: str, frame,
     return b
 
 
+def _menu_header(label: str) -> "rumps.MenuItem":
+    """Menu section header with accent color."""
+    from AppKit import (NSAttributedString, NSColor, NSFont,
+                        NSForegroundColorAttributeName, NSFontAttributeName)
+    item = rumps.MenuItem(label, callback=None)
+    attrs = {
+        NSForegroundColorAttributeName: NSColor.colorWithRed_green_blue_alpha_(0.03, 0.15, 0.50, 1.0),
+        NSFontAttributeName:            NSFont.boldSystemFontOfSize_(13),
+    }
+    item._menuitem.setAttributedTitle_(
+        NSAttributedString.alloc().initWithString_attributes_(label, attrs))
+    return item
+
+
 def _primary_btn(title: str, target, action: str, frame,
                  key_eq: str | None = None) -> NSButton:
     """Primary action button with system accent color."""
@@ -165,10 +183,13 @@ def _primary_btn(title: str, target, action: str, frame,
 def _vibrancy_content_view(window) -> NSVisualEffectView:
     """Replace the window's plain content view with a vibrant NSVisualEffectView.
     Returns the view so callers can use it as `cv` and add subviews normally."""
+    from AppKit import NSColor
     vfx = NSVisualEffectView.alloc().initWithFrame_(window.contentView().frame())
     vfx.setMaterial_(12)   # NSVisualEffectMaterialWindowBackground
     vfx.setBlendingMode_(0)  # NSVisualEffectBlendingModeBehindWindow
     vfx.setState_(1)  # NSVisualEffectStateActive
+    window.setOpaque_(False)
+    window.setBackgroundColor_(NSColor.clearColor())
     window.setContentView_(vfx)
     return vfx
 
@@ -3026,7 +3047,7 @@ class Switchman(rumps.App):
             if n in self._model_map and (n not in hidden or n == default_model)
         ]
         if recent_names:
-            menu.append(rumps.MenuItem("── Recent ──", callback=None))
+            menu.append(_menu_header("── Recent ──"))
             for rname in recent_names:
                 ritem = rumps.MenuItem(f"  {self._display(rname)}", callback=self._on_select)
                 ritem._model_name = rname
@@ -3038,7 +3059,7 @@ class Switchman(rumps.App):
         # ── Profiles section ────────────────��────────────────────────────��────
         profiles = load_profiles()
         if profiles:
-            menu.append(rumps.MenuItem("── Profiles ──", callback=None))
+            menu.append(_menu_header("── Profiles ──"))
             for p in profiles:
                 item = rumps.MenuItem(f"  {p['name']}", callback=self._on_apply_profile)
                 item._profile_data = p
@@ -3046,13 +3067,13 @@ class Switchman(rumps.App):
             menu.append(None)
 
         if mlx_visible:
-            menu.append(rumps.MenuItem("── MLX ──", callback=None))
+            menu.append(_menu_header("── MLX ──"))
             for name in mlx_visible:
                 menu.append(self._make_model_item(name))
             menu.append(None)
 
         if gguf_visible:
-            menu.append(rumps.MenuItem("── GGUF ──", callback=None))
+            menu.append(_menu_header("── GGUF ──"))
             for name in gguf_visible:
                 menu.append(self._make_model_item(name))
             menu.append(None)
