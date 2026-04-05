@@ -2940,7 +2940,7 @@ class Switchman(rumps.App):
     def _start_tps_poll(self):
         if self._tps_poll_timer is not None:
             return
-        self._tps_poll_timer = rumps.Timer(self._on_tps_tick, 10)
+        self._tps_poll_timer = rumps.Timer(self._on_tps_tick, 5)
         self._tps_poll_timer.start()
         self._start_watchdog()
 
