@@ -1,10 +1,35 @@
 # Switchman
 
+[![CI](https://github.com/Buckeyes1995/switchman/actions/workflows/ci.yml/badge.svg)](https://github.com/Buckeyes1995/switchman/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
+
 A macOS menu bar app for managing local LLM inference. Pick a model, it loads — no terminal, no config files, no fuss.
 
 Supports **MLX** models via [oMLX](https://github.com/jmorganca/omlx) (Apple Silicon) and **GGUF** models via [llama.cpp](https://github.com/ggerganov/llama.cpp). Built with Python + rumps + PyObjC — no Electron, no web views, no cloud.
 
 > Tested on M2 Max (96 GB), macOS 15. Apple Silicon required for MLX; GGUF works on any Mac.
+
+---
+
+<!-- screenshots -->
+![Switchman menu](docs/screenshots/menu.png)
+![Quick Test and benchmark](docs/screenshots/quicktest.png)
+
+---
+
+## Why Switchman?
+
+Most local LLM tools are either full desktop apps (LM Studio, Ollama Desktop) or web UIs (Open WebUI). Switchman is neither — it lives in the menu bar and stays out of the way.
+
+- **No web browser required** — everything is a native macOS panel
+- **No Electron, no Node, no web server** — pure Python + PyObjC, ~15 MB installed
+- **Unified MLX + GGUF** — both backends in one menu, same interface
+- **llama-bench integration** — sweep batch sizes, cache types, and flash attention from a GUI; results saved to history with a Chart.js chart
+- **Built for power users** — per-model sampling params, profiles, thinking mode, agent config sync, global hotkey
+
+If you want a polished GUI with model discovery and a chat interface, use LM Studio. If you want a lightweight menu bar switch that gets out of your way while you work, this is for you.
 
 ---
 
@@ -72,6 +97,12 @@ See [ROADMAP.md](ROADMAP.md) for planned features, known issues, and the ideas p
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome — please read it before submitting.
+
+---
+
 ## License
 
-MIT
+[MIT](LICENSE)
