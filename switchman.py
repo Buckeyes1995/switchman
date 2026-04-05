@@ -711,7 +711,7 @@ def run_settings_panel(cfg: dict) -> bool:
          + _SH + _SG + 4 * (_RH + _RG)            # Paths (4 rows)
          + _DG + _SH + _SG + 3 * (_RH + _RG)      # oMLX (3 rows)
          + _DG + _SH + _SG + 2 * (_RH + _RG) - _RG  # Behavior (2 rows)
-         + _DG + _SH + _SG + 4 * (_RH + _RG)        # Sync (4 checkboxes)
+         + _DG + _SH + _SG + 5 * (_RH + _RG)        # Sync (4 checkboxes + script field)
          + _DG + _BTN_H + _BTN_BOT)
 
     def fy(from_top: int, h: int = _RH) -> int:
@@ -794,14 +794,22 @@ def run_settings_panel(cfg: dict) -> bool:
     for key, title in [
         ("notifications",  "macOS notification when model ready"),
         ("sync_env",       "Write env file (LLM_BASE_URL) on switch"),
+        ("sync_aider",     "Sync ~/.aider.conf.yml on switch"),
+        ("sync_zed",       "Sync ~/.config/zed/settings.json on switch"),
     ]:
         c = NSButton.alloc().initWithFrame_(((x_fld, fy(cur)), (FW, _RH)))
         c.setButtonType_(3)
         c.setTitle_(title)
-        c.setState_(1 if cfg.get(key, True) else 0)
+        c.setState_(1 if cfg.get(key, DEFAULTS.get(key, False)) else 0)
         cv.addSubview_(c)
         sync_chks[key] = c
         cur += _RH + _RG
+
+    cv.addSubview_(_lbl("On switch script:", ((x_lbl, fy(cur)), (_LW, _RH))))
+    script_fld = _fld(cfg.get("on_switch_script", ""), ((x_fld, fy(cur)), (FW, _RH)))
+    script_fld.setPlaceholderString_("/path/to/script.sh  (env: SWITCHMAN_MODEL, _PORT, _KIND)")
+    cv.addSubview_(script_fld)
+    cur += _RH + _RG
 
     # ── Buttons ──
     cv.addSubview_(_btn("Cancel", handler, "stopCancel:",
@@ -829,6 +837,7 @@ def run_settings_panel(cfg: dict) -> bool:
     cfg["terminal_app"] = term_popup.titleOfSelectedItem()
     for key, c in sync_chks.items():
         cfg[key] = bool(c.state())
+    cfg["on_switch_script"] = script_fld.stringValue().strip()
     return True
 
 def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
@@ -2136,8 +2145,11 @@ DEFAULTS = {
     "recent_models":  [],         # [model_name, ...] max 5, most recent first
     "default_model":  "",         # model name to auto-load on startup (empty = none)
     # Feature flags
-    "sync_env":       True,       # write ~/.config/switchman/env on switch
-    "notifications":  True,       # macOS notification when model is ready
+    "sync_env":         True,     # write ~/.config/switchman/env on switch
+    "sync_aider":       False,    # write ~/.aider.conf.yml on switch
+    "sync_zed":         False,    # write ~/.config/zed/settings.json on switch
+    "notifications":    True,     # macOS notification when model is ready
+    "on_switch_script": "",       # shell command to run after every model switch
 }
 
 
@@ -2493,10 +2505,86 @@ def sync_env_file(port: int) -> None:
         pass
 
 
-def sync_clients(cfg: dict, port: int) -> None:
+def sync_aider_config(port: int, model_name: str) -> None:
+    """Write ~/.aider.conf.yml with the current model and port."""
+    path = Path.home() / ".aider.conf.yml"
+    try:
+        path.write_text(
+            f"openai-api-base: http://localhost:{port}/v1\n"
+            f"openai-api-key: dummy\n"
+            f"model: openai/{model_name}\n"
+        )
+    except Exception:
+        pass
+
+
+def sync_zed_config(port: int, model_name: str) -> None:
+    """Write ~/.config/zed/settings.json assistant section."""
+    path = Path.home() / ".config" / "zed" / "settings.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cfg = json.loads(path.read_text()) if path.exists() else {}
+        cfg.setdefault("language_models", {}).setdefault("openai", {}).update({
+            "api_url": f"http://localhost:{port}/v1",
+            "available_models": [{"name": model_name, "display_name": model_name,
+                                   "max_tokens": 32768}],
+        })
+        cfg.setdefault("assistant", {}).update({
+            "default_model": {"provider": "openai", "model": model_name},
+            "version": "2",
+        })
+        path.write_text(json.dumps(cfg, indent=2) + "\n")
+    except Exception:
+        pass
+
+
+def run_on_switch_script(script: str, model_name: str, port: int, kind: str) -> None:
+    """Run user-defined shell script after model switch. Non-blocking."""
+    if not script.strip():
+        return
+    env = {**os.environ,
+           "SWITCHMAN_MODEL": model_name,
+           "SWITCHMAN_PORT": str(port),
+           "SWITCHMAN_KIND": kind}
+    try:
+        subprocess.Popen(script, shell=True, env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def sync_clients(cfg: dict, port: int, model_name: str = "", kind: str = "") -> None:
     """Sync all enabled external client configs. Safe to call from any thread."""
     if cfg.get("sync_env", True):
         sync_env_file(port)
+    if cfg.get("sync_aider") and model_name:
+        sync_aider_config(port, model_name)
+    if cfg.get("sync_zed") and model_name:
+        sync_zed_config(port, model_name)
+    if cfg.get("on_switch_script") and model_name:
+        run_on_switch_script(cfg["on_switch_script"], model_name, port, kind)
+
+
+def estimate_model_memory_gb(path: Path) -> float:
+    """Estimate unified memory needed for a model based on disk size (GB)."""
+    try:
+        if path.is_dir():
+            size_bytes = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        else:
+            size_bytes = path.stat().st_size
+        # Disk size ≈ weights. Add ~15% for runtime overhead + KV cache headroom.
+        return (size_bytes / 1_073_741_824) * 1.15
+    except Exception:
+        return 0.0
+
+
+def get_total_ram_gb() -> float:
+    """Return total unified memory in GB via sysctl."""
+    try:
+        r = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
+        return int(r.stdout.strip()) / 1_073_741_824
+    except Exception:
+        return 0.0
 
 
 def find_opencode_processes() -> list[tuple[int, str]]:
@@ -3281,6 +3369,10 @@ class Switchman(rumps.App):
         s.add(None)
         s.add(rumps.MenuItem("  Export Settings…", callback=self._export_settings))
         s.add(rumps.MenuItem("  Import Settings…", callback=self._import_settings))
+        s.add(None)
+        port = self._cfg.get("omlx_port", 8000)
+        copy_item = _sf_item(f"Copy API URL  (:{port}/v1)", "link.circle", self._copy_api_url)
+        s.add(copy_item)
         return s
 
     
@@ -3384,6 +3476,22 @@ class Switchman(rumps.App):
         if entry is None:
             return
         path, kind = entry
+
+        # ── Memory cost check ────────────────────────────────────────────────
+        est_gb = estimate_model_memory_gb(path)
+        total_gb = get_total_ram_gb()
+        if est_gb > 0 and total_gb > 0 and est_gb > total_gb - 6:
+            from AppKit import NSAlert
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("Model may not fit in memory")
+            alert.setInformativeText_(
+                f"{name}\nestimated {est_gb:.1f} GB — your Mac has {total_gb:.0f} GB total.\n\n"
+                "Loading may cause heavy swap or a crash. Continue?")
+            alert.addButtonWithTitle_("Load Anyway")
+            alert.addButtonWithTitle_("Cancel")
+            if alert.runModal() != 1000:   # 1000 = first button (Load Anyway)
+                return
+
         self._update_recent(name)
         # Increment token — any in-progress load will see it changed and abort
         self._switch_token += 1
@@ -3469,7 +3577,7 @@ class Switchman(rumps.App):
             max_tokens=p["max_tokens"],
             sampling=sampling,
         )
-        sync_clients(self._cfg, self._cfg.get("omlx_port", 8000))
+        sync_clients(self._cfg, self._cfg.get("omlx_port", 8000), model_name=name, kind="mlx")
         if self._cfg.get("notifications", True):
             send_model_ready_notification(name)
         self._start_poll_on_rebuild = True
@@ -3529,7 +3637,7 @@ class Switchman(rumps.App):
             max_tokens=p["max_tokens"],
             sampling=llama_sampling_params(p),
         )
-        sync_clients(self._cfg, self._cfg.get("llama_port", 8000))
+        sync_clients(self._cfg, self._cfg.get("llama_port", 8000), model_name=model_id, kind="gguf")
         if self._cfg.get("notifications", True):
             send_model_ready_notification(name)
         self._start_poll_on_rebuild = True
@@ -3658,6 +3766,14 @@ class Switchman(rumps.App):
         if run_settings_panel(self._cfg):
             save_config(self._cfg)
             self._build_menu()
+
+    def _copy_api_url(self, _):
+        from AppKit import NSPasteboard, NSStringPboardType
+        port = self._cfg.get("omlx_port", 8000)
+        url = f"http://localhost:{port}/v1"
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(url, NSStringPboardType)
 
     def _export_settings(self, _):
         from AppKit import NSSavePanel
