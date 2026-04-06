@@ -199,6 +199,22 @@ def _primary_btn(title: str, target, action: str, frame,
     return b
 
 
+def _constrain_to_screen(window) -> None:
+    """After center(), nudge the window so it's fully inside the visible screen area."""
+    from AppKit import NSScreen
+    vis = NSScreen.mainScreen().visibleFrame()
+    fr = window.frame()
+    ox, oy = fr.origin.x, fr.origin.y
+    sw, sh = fr.size.width, fr.size.height
+    # Clamp bottom edge
+    if oy < vis.origin.y:
+        oy = vis.origin.y
+    # Clamp top edge (if window taller than screen, align to top of visible area)
+    if oy + sh > vis.origin.y + vis.size.height:
+        oy = max(vis.origin.y, vis.origin.y + vis.size.height - sh)
+    window.setFrameOrigin_((ox, oy))
+
+
 def _vibrancy_content_view(window) -> NSVisualEffectView:
     """Replace the window's plain content view with a vibrant NSVisualEffectView.
     Returns the view so callers can use it as `cv` and add subviews normally."""
@@ -724,6 +740,7 @@ def run_settings_panel(cfg: dict) -> bool:
     panel.setTitle_("Switchman — Settings")
     panel.setDelegate_(handler)
     panel.center()
+    _constrain_to_screen(panel)
     panel.setTitlebarAppearsTransparent_(True)
     panel.setMovableByWindowBackground_(True)
     cv = _vibrancy_content_view(panel)
