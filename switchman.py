@@ -3776,10 +3776,14 @@ class Switchman(rumps.App):
         self._load_status = "Warming up…"
         http_post(url, body={
             "model": name,
-            "messages": [{"role": "user", "content": "Write a short Python hello world function."}],
-            "max_tokens": 512,
+            "messages": [{"role": "user", "content":
+                "Write a detailed technical explanation of how transformer attention "
+                "mechanisms work, including multi-head attention, key/query/value "
+                "projections, and softmax scaling. Include Python code examples. "
+                "Be thorough and complete."}],
+            "max_tokens": 2048,
             **sampling,
-        }, headers=headers, timeout=300)
+        }, headers=headers, timeout=600)
 
         if self._superseded(token): return
         set_opencode_model(
