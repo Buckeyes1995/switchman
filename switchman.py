@@ -415,6 +415,35 @@ def _save_prompt_history(history: list[str], prompt: str) -> list[str]:
     return history
 
 
+def _update_spark_chart(spark_view, history):
+    """Draw tok/s history as simple colored NSBox bars inside spark_view (NSView)."""
+    from AppKit import NSBox, NSColor
+    # Remove all subviews
+    for sv in list(spark_view.subviews()):
+        sv.removeFromSuperview()
+    if not history:
+        return
+    n = len(history)
+    bounds = spark_view.bounds()
+    W = bounds.size.width
+    H = bounds.size.height
+    max_val = max(history) or 1.0
+    gap = 2
+    bar_w = max(4, (W - gap * (n - 1)) / n)
+    color = NSColor.systemGreenColor()
+    for i, val in enumerate(history):
+        bar_h = max(2, (val / max_val) * (H - 2))
+        x = i * (bar_w + gap)
+        box = NSBox.alloc().initWithFrame_(((x, 0), (bar_w, bar_h)))
+        box.setBoxType_(0)  # NSBoxPrimary (filled)
+        box.setFillColor_(color)
+        box.setBorderColor_(NSColor.clearColor())
+        box.setTitlePosition_(0)  # no title
+        box.setBorderWidth_(0)
+        spark_view.addSubview_(box)
+    spark_view.setNeedsDisplay_(True)
+
+
 class _SuggestionTableSource(NSObject):
     """NSTableView data source/delegate for generated prompt suggestions."""
 
@@ -4464,6 +4493,294 @@ class Switchman(rumps.App):
 
     # ── Idle tick (main-thread bridge for background work) ────────────────────
 
+    # ── Menu bar popover (Phase 4–6) ──────────────────────────────────────────
+
+    def _make_popover_panel(self):
+        """Build the floating popover NSPanel (320×500 pt)."""
+        from AppKit import (
+            NSPanel, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
+            NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered,
+            NSColor, NSFont, NSTextField, NSButton, NSProgressIndicator,
+        )
+        from AppKit import NSWindowStyleMaskHUDWindow  # noqa: F401
+        PW, PH = 320, 480
+        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                 NSWindowStyleMaskNonactivatingPanel)
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (PW, PH)), style, NSBackingStoreBuffered, False)
+        panel.setTitle_("Switchman")
+        panel.setFloatingPanel_(True)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setReleasedWhenClosed_(False)
+        panel.setTitlebarAppearsTransparent_(True)
+        panel.setMovableByWindowBackground_(True)
+        cv = _vibrancy_content_view(panel)
+
+        y = PH - 44
+        def _lbl_pop(text, frame, size=12, bold=False):
+            f = NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size)
+            l = NSTextField.alloc().initWithFrame_(frame)
+            l.setStringValue_(text); l.setBezeled_(False)
+            l.setDrawsBackground_(False); l.setEditable_(False); l.setSelectable_(False)
+            l.setFont_(f); l.setTextColor_(NSColor.labelColor())
+            return l
+
+        # Active model name (large)
+        model_lbl = _lbl_pop("", ((_PAD, y), (PW - _PAD*2, 22)), size=15, bold=True)
+        model_lbl.setTextColor_(NSColor.labelColor())
+        cv.addSubview_(model_lbl); self._pop_model_lbl = model_lbl
+
+        y -= 20
+        # Meta row: kind · size · ctx%
+        meta_lbl = _lbl_pop("", ((_PAD, y), (PW - _PAD*2, 16)), size=11)
+        meta_lbl.setTextColor_(NSColor.secondaryLabelColor())
+        cv.addSubview_(meta_lbl); self._pop_meta_lbl = meta_lbl
+
+        y -= 10
+        # Thin separator
+        from AppKit import NSBox as _NSBOX
+        sep1 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
+        sep1.setBoxType_(2); cv.addSubview_(sep1)
+
+        y -= 18
+        # tok/s label
+        tps_lbl = _lbl_pop("● 0 tok/s", ((_PAD, y), (PW - _PAD*2, 16)), size=11)
+        tps_lbl.setTextColor_(NSColor.secondaryLabelColor())
+        cv.addSubview_(tps_lbl); self._pop_tps_lbl = tps_lbl
+
+        y -= 28
+        # Spark chart placeholder (NSView — drawn in Phase 5)
+        from AppKit import NSView as _NSV
+        spark_view = _NSV.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 24)))
+        cv.addSubview_(spark_view); self._pop_spark_view = spark_view
+        self._pop_tps_history = []  # filled by _pop_refresh
+
+        y -= 12
+        sep2 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
+        sep2.setBoxType_(2); cv.addSubview_(sep2)
+
+        y -= 22
+        # Memory pressure bar label + progress bar
+        mem_lbl = _lbl_pop("🟢 Memory", ((_PAD, y), (80, 16)), size=11)
+        cv.addSubview_(mem_lbl); self._pop_mem_lbl = mem_lbl
+
+        mem_bar = NSProgressIndicator.alloc().initWithFrame_(
+            ((_PAD + 84, y + 1), (PW - _PAD*2 - 84 - 44, 14)))
+        mem_bar.setStyle_(0)  # bar
+        mem_bar.setIndeterminate_(False)
+        mem_bar.setMinValue_(0); mem_bar.setMaxValue_(100)
+        mem_bar.setDoubleValue_(0)
+        cv.addSubview_(mem_bar); self._pop_mem_bar = mem_bar
+
+        mem_pct_lbl = _lbl_pop("0%", ((PW - _PAD - 40, y), (40, 16)), size=11)
+        mem_pct_lbl.setTextColor_(NSColor.secondaryLabelColor())
+        cv.addSubview_(mem_pct_lbl); self._pop_mem_pct_lbl = mem_pct_lbl
+
+        y -= 22
+        # Thermal state
+        thermal_lbl = _lbl_pop("🌡 Thermal  Nominal", ((_PAD, y), (PW - _PAD*2, 16)), size=11)
+        thermal_lbl.setTextColor_(NSColor.secondaryLabelColor())
+        cv.addSubview_(thermal_lbl); self._pop_thermal_lbl = thermal_lbl
+
+        y -= 14
+        sep3 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
+        sep3.setBoxType_(2); cv.addSubview_(sep3)
+
+        y -= 32
+        # Primary action buttons row 1
+        bw = (PW - _PAD*2 - _GAP) // 2
+        btn_qt = _btn("💬 Quick Test", self, "popQuickTest:",
+                      ((_PAD, y), (bw, 26)))
+        cv.addSubview_(btn_qt)
+        btn_sw = _btn("⇄ Switch Model", self, "popSwitchModel:",
+                      ((_PAD + bw + _GAP, y), (bw, 26)))
+        cv.addSubview_(btn_sw)
+
+        y -= 32
+        # Row 2
+        btn_bm = _btn("⏱ Benchmark", self, "popBenchmark:",
+                      ((_PAD, y), (bw, 26)))
+        cv.addSubview_(btn_bm)
+        btn_st = _btn("⚙ Settings", self, "popSettings:",
+                      ((_PAD + bw + _GAP, y), (bw, 26)))
+        cv.addSubview_(btn_st)
+
+        y -= 16
+        sep4 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
+        sep4.setBoxType_(2); cv.addSubview_(sep4)
+
+        y -= 22
+        recent_hdr = _lbl_pop("RECENT", ((_PAD, y), (PW - _PAD*2, 14)), size=10)
+        recent_hdr.setTextColor_(NSColor.tertiaryLabelColor())
+        cv.addSubview_(recent_hdr)
+
+        y -= 4
+        # Recent model list (up to 5 one-click switch buttons)
+        self._pop_recent_btns = []
+        for i in range(5):
+            y -= 28
+            rb = NSButton.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 24)))
+            rb.setTitle_("")
+            rb.setBezelStyle_(4)
+            rb.setTarget_(self)
+            rb.setAction_("popLoadRecent:")
+            rb.setHidden_(True)
+            rb.setTag_(i)
+            cv.addSubview_(rb)
+            self._pop_recent_btns.append(rb)
+
+        self._popover_panel = panel
+        return panel
+
+    def _open_popover(self, _=None):
+        """Show/hide the custom popover panel anchored near the menu bar."""
+        if not hasattr(self, '_popover_panel') or self._popover_panel is None:
+            self._make_popover_panel()
+        panel = self._popover_panel
+        if panel.isVisible():
+            panel.orderOut_(None)
+            return
+        self._pop_refresh()
+        # Position below the status bar item
+        from AppKit import NSScreen
+        screen_h = NSScreen.mainScreen().frame().size.height
+        menu_bar_h = NSScreen.mainScreen().visibleFrame().origin.y + NSScreen.mainScreen().visibleFrame().size.height
+        # Rough position: top-right area
+        pw = panel.frame().size.width
+        ph = panel.frame().size.height
+        sx = NSScreen.mainScreen().frame().size.width - pw - 20
+        sy = menu_bar_h - ph - 4
+        panel.setFrameOrigin_((sx, sy))
+        panel.makeKeyAndOrderFront_(None)
+        # Start refresh timer
+        if not getattr(self, '_pop_timer', None):
+            self._pop_timer = rumps.Timer(self._pop_tick_, 2.0)
+            self._pop_timer.start()
+
+    def _pop_refresh(self):
+        """Update all popover labels with current state."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['memory_pressure'], capture_output=True, text=True, timeout=2)
+            pct_str = ""
+            for line in result.stdout.splitlines():
+                if "System memory pressure" in line or "percentage" in line.lower():
+                    import re
+                    m = re.search(r'(\d+)%', line)
+                    if m:
+                        pct_str = m.group(1)
+            mem_pct = int(pct_str) if pct_str else 0
+        except Exception:
+            mem_pct = 0
+
+        if self._loading and self._active:
+            self._pop_model_lbl.setStringValue_(f"⏳ Loading {self._display(self._active)}…")
+            status = getattr(self, '_load_status', 'Loading…')
+            estimate = getattr(self, '_load_time_estimate', None)
+            if estimate and self._load_start_time:
+                elapsed = __import__('time').time() - self._load_start_time
+                remaining = max(0, int(estimate - elapsed))
+                status = f"~{remaining}s remaining"
+            self._pop_meta_lbl.setStringValue_(status)
+        elif self._active:
+            self._pop_model_lbl.setStringValue_(self._display(self._active))
+            kind = self._model_kind(self._active).upper()
+            path = self._model_map.get(self._active, (None, None))[0]
+            size_str = ""
+            if path and path.exists():
+                try:
+                    size_b = sum(f.stat().st_size for f in path.rglob('*') if f.is_file()) if path.is_dir() else path.stat().st_size
+                    size_str = f" · {size_b/1e9:.1f} GB"
+                except Exception:
+                    pass
+            ctx_str = ""
+            if self._ctx_used and self._ctx_max:
+                ctx_str = f" · ctx {int(self._ctx_used/self._ctx_max*100)}%"
+            self._pop_meta_lbl.setStringValue_(f"{kind}{size_str}{ctx_str}")
+        else:
+            self._pop_model_lbl.setStringValue_("No model loaded")
+            self._pop_meta_lbl.setStringValue_("")
+
+        # Memory bar
+        mem_dot = "🔴" if self._mem_pressure == "critical" else ("🟡" if self._mem_pressure == "fair" else "🟢")
+        self._pop_mem_lbl.setStringValue_(f"{mem_dot} Memory")
+        self._pop_mem_bar.setDoubleValue_(mem_pct)
+        self._pop_mem_pct_lbl.setStringValue_(f"{mem_pct}%")
+
+        # Thermal
+        thermal_map = {"nominal": "Nominal", "fair": "Fair ⚠", "serious": "Serious ⚠⚠", "critical": "Critical 🔥"}
+        thermal_str = thermal_map.get(self._thermal_state, self._thermal_state.title())
+        self._pop_thermal_lbl.setStringValue_(f"🌡 Thermal  {thermal_str}")
+
+        # tok/s from tps poll + spark chart
+        tps_val = getattr(self, '_pop_last_tps', 0.0)
+        dot = "🟢" if tps_val > 5 else ("🟡" if tps_val > 0 else "⚫")
+        self._pop_tps_lbl.setStringValue_(f"{dot} {tps_val:.1f} tok/s")
+        # Update spark chart history
+        if not hasattr(self, '_pop_tps_history'):
+            self._pop_tps_history = []
+        if tps_val > 0:
+            self._pop_tps_history.append(tps_val)
+            if len(self._pop_tps_history) > 10:
+                self._pop_tps_history.pop(0)
+        if hasattr(self, '_pop_spark_view'):
+            _update_spark_chart(self._pop_spark_view, self._pop_tps_history)
+
+        # Recent models
+        recent = self._cfg.get("recent_models", [])
+        for i, rb in enumerate(self._pop_recent_btns):
+            if i < len(recent):
+                name = recent[i]
+                display = self._display(name)
+                if len(display) > 38:
+                    display = display[:36] + "…"
+                rb.setTitle_(display)
+                rb.setHidden_(False)
+                rb.setTag_(i)
+            else:
+                rb.setHidden_(True)
+
+    def _pop_tick_(self, timer):
+        """Refresh popover every 2s if visible."""
+        if not hasattr(self, '_popover_panel') or not self._popover_panel.isVisible():
+            timer.stop()
+            self._pop_timer = None
+            return
+        self._pop_refresh()
+
+    def popQuickTest_(self, _):
+        self._open_test_prompt(None)
+        if hasattr(self, '_popover_panel'):
+            self._popover_panel.orderOut_(None)
+
+    def popSwitchModel_(self, _):
+        self._open_search(None)
+        if hasattr(self, '_popover_panel'):
+            self._popover_panel.orderOut_(None)
+
+    def popBenchmark_(self, _):
+        self._open_bench(None)
+        if hasattr(self, '_popover_panel'):
+            self._popover_panel.orderOut_(None)
+
+    def popSettings_(self, _):
+        self._open_settings(None)
+        if hasattr(self, '_popover_panel'):
+            self._popover_panel.orderOut_(None)
+
+    def popLoadRecent_(self, sender):
+        idx = sender.tag()
+        recent = self._cfg.get("recent_models", [])
+        if idx < len(recent):
+            name = recent[idx]
+            if name in self._model_map:
+                class _S: pass
+                s = _S(); s._model_name = name
+                self._on_select(s)
+        if hasattr(self, '_popover_panel'):
+            self._popover_panel.orderOut_(None)
+
     def _on_idle_tick(self, _timer):
         # Request notification permission once, on the first idle tick after the
         # run loop is live (main thread required for the system prompt to appear).
@@ -4760,6 +5077,7 @@ class Switchman(rumps.App):
             self._thermal_state, "⚪")
         s.add(rumps.MenuItem(f"{thermal_dot}  Thermal: {self._thermal_state}", callback=None))
         s.add(None)
+        s.add(rumps.MenuItem("  ◎ Dashboard…", callback=self._open_popover))
         s.add(rumps.MenuItem("  Open Settings…", callback=self._open_settings))
         s.add(rumps.MenuItem("  Manage Profiles…", callback=self._open_profiles))
         s.add(rumps.MenuItem("  Manage Visible Models…", callback=self._open_manage_models))
