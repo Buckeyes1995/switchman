@@ -74,8 +74,8 @@ Tag models with free-form labels (e.g., `coding`, `reasoning`, `vision`, `fast`)
 ### Download Queue
 Queue multiple HuggingFace downloads. Show overall queue progress in the menu bar. Cancel individual items.
 
-### HuggingFace Authentication
-Support `HF_TOKEN` for downloading gated models (Llama, Gemma, etc.) and higher rate limits. Token stored in system keychain, not config file.
+### ~~HuggingFace Authentication~~ ✓ Done
+`HF token` field in Settings → Sync. Passed to `hf_model_info` and `build_hf_headers` for gated model downloads. (Keychain storage is a future enhancement.)
 
 ### Model Comparison History
 Save side-by-side compare results from Quick Test to a history file. Browse and export past comparisons.
@@ -86,28 +86,8 @@ Writes `~/.aider.conf.yml` (port + model name) on every switch. Toggle in Settin
 ### ~~IDE / Client Sync — Zed~~ ✓ Done
 Writes `~/.config/zed/settings.json` assistant section on every switch. Toggle in Settings → Sync.
 
-### IDE / Client Sync — Fix Continue.dev
-Previous sync only updated `apiBase` (the port) but not the model name. Code was removed pending a proper implementation. Starting point:
-
-```python
-def sync_continue_config(port: int, model_name: str) -> None:
-    path = Path.home() / ".continue" / "config.json"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        cfg = json.loads(path.read_text()) if path.exists() else {}
-        models = cfg.setdefault("models", [])
-        entry = next((m for m in models if m.get("title") == "Local LLM"), None)
-        if entry is None:
-            entry = {"title": "Local LLM", "provider": "openai"}
-            models.insert(0, entry)
-        entry["apiBase"] = f"http://localhost:{port}/v1"
-        entry["model"] = model_name   # was missing — caused wrong model to be used
-        path.write_text(json.dumps(cfg, indent=2) + "\n")
-    except Exception:
-        pass
-```
-
-Needs real-world testing against current Continue.dev config format before re-adding.
+### ~~IDE / Client Sync — Fix Continue.dev~~ ✓ Done
+Now writes `apiBase`, `model`, and `apiKey` to the "Local LLM" entry. Toggle in Settings → Sync. Needs real-world testing.
 
 ### IDE / Client Sync — Cursor (needs rethink)
 Previous implementation wrote to `~/.cursor/mcp.json` as an MCP tool server — wrong approach. MCP servers provide tools/context, not the AI model. Removed. Cursor's AI model provider is not easily configurable externally; needs investigation before re-adding. Previous (incorrect) code for reference:
@@ -149,6 +129,49 @@ Select two or more past benchmark runs and diff them side by side — useful for
 ### ~~Plugin / Script Hooks~~ ✓ Done
 "On switch script" field in Settings runs any shell command after every switch. Env vars: `SWITCHMAN_MODEL`, `SWITCHMAN_PORT`, `SWITCHMAN_KIND`.
 
+### ~~Auto-Reload on Crash~~ ✓ Done
+Watchdog detects server death and optionally reloads the last active model. Toggle in Settings → Sync.
+
+### ~~Server Log Viewer~~ ✓ Done
+Settings → Server Logs… opens a floating panel tailing the oMLX launchd log stream.
+
+### ~~Model Load Time~~ ✓ Done
+macOS notification includes elapsed load time in seconds (e.g. "Model ready (42s)").
+
+---
+
+## New Planned Features
+
+### Resizable Panels
+Settings, Quick Test, and Benchmark windows currently have fixed sizes. Allow resizing with `setMinSize_` / `setMaxSize_` and auto-layout so fields stretch with the window.
+
+### Model Favorites / Pinning
+Let users pin any model to the top of the menu (above Recent) regardless of recency. Stored as `pinned_models: []` in config.
+
+### Context Usage in Menu Bar Title
+After a Quick Test run, show ctx% in the menu bar title (e.g. `⚡ Qwen 12%`). Clear on next model switch.
+
+### Multi-line Prompt Support in Quick Test
+Shift+Enter inserts a newline in the Quick Test input field. Currently Enter always submits.
+
+### Copy Last Response Button
+One-click button in Quick Test to copy the entire output text view to clipboard.
+
+### Quick Test Font Size Controls
+`+` / `−` buttons (or a slider) to resize the monospace output font without restarting.
+
+### Thermal State Indicator
+Show macOS thermal state (nominal / fair / serious / critical) alongside the memory pressure dot in the Settings submenu.
+
+### Model Notes as Tooltip
+Show model notes as `NSToolTip` on the menu item row rather than as a non-interactive submenu entry — reduces menu depth.
+
+### Keyboard Shortcut to Load Default Model
+Global hotkey (e.g. ⌥⌘D) that immediately loads the ★ default model, bypassing the menu.
+
+### Export Quick Test Session
+Save the current prompt + response pair to a Markdown file via NSSavePanel. Useful for sharing or archiving interesting outputs.
+
 ---
 
 ## Known Issues / Tech Debt
@@ -167,3 +190,13 @@ Select two or more past benchmark runs and diff them side by side — useful for
 - Token-per-dollar cost display (for hosted model comparison)
 - Integration with `llm` CLI tool (Simon Willison's)
 - Auto-detect new models dropped into model directories (FSEvents watcher)
+- **Resizable panels** — let the user drag to resize Settings and Quick Test windows
+- **Model Favorites / Pinning** — pin any model to the top of the menu, above Recent
+- **Context length in title** — show ctx% in menu bar title after Quick Test (e.g. `⚡ Qwen 12%`)
+- **Multi-line prompt support** — shift+enter inserts newline in Quick Test input
+- **Copy last response** — one-click button to copy entire Quick Test output to clipboard
+- **Quick Test font size** — slider or +/- buttons to resize the output monospace font
+- **Thermal / CPU stats** — show thermal state (nominal/fair/serious/critical) alongside memory pressure
+- **Model notes in tooltip** — show model note as NSToolTip on the menu item instead of a submenu entry
+- **Keyboard shortcut to load default model** — global hotkey that immediately loads the ★ default model
+- **Export Quick Test session** — save prompt + response pair to a Markdown file
