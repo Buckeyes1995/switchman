@@ -378,6 +378,16 @@ class _TestPromptHandler(NSObject):
 
     def control_textView_doCommandBySelector_(self, control, textView, sel):
         name = sel if isinstance(sel, str) else str(sel)
+        # Shift+Enter → insert newline instead of sending
+        if "insertNewline" in name:
+            from AppKit import NSApp
+            mods = NSApp.currentEvent().modifierFlags() if NSApp.currentEvent() else 0
+            SHIFT = 1 << 17   # NSEventModifierFlagShift
+            if mods & SHIFT:
+                cur = self._input_fld.stringValue()
+                self._input_fld.setStringValue_(cur + "\n")
+                return True
+            return False   # let normal Enter/Return fire send_
         if "moveUp" in name:
             hist = self._history
             if not hist:
@@ -523,6 +533,11 @@ class _TestPromptHandler(NSObject):
                 used = prompt_toks + self._tok_count
                 pct = used / ctx_max * 100
                 ctx_part = f"  |  ctx {used:,}/{ctx_max:,} ({pct:.0f}%)"
+                # Push ctx info to app title bar
+                if self._app_ref:
+                    self._app_ref._ctx_used = used
+                    self._app_ref._ctx_max = ctx_max
+                    self._app_ref._update_title()
             self._tps_lbl.setStringValue_(
                 f"{ttft_part}{self._tok_count / elapsed:.1f} tok/s  ({self._tok_count} tokens){ctx_part}")
         streaming2 = getattr(self, '_streaming2', False)
@@ -536,6 +551,49 @@ class _TestPromptHandler(NSObject):
         self._input_fld.setStringValue_("")
         if hasattr(self, '_output_tv2'):
             self._output_tv2.setString_("")
+
+    def copyResponse_(self, _s):
+        from AppKit import NSPasteboard, NSStringPboardType
+        text = self._output_tv.string() or ""
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(text, NSStringPboardType)
+
+    def fontLarger_(self, _s):
+        self._output_font_size = min(self._output_font_size + 1, 28)
+        self._apply_font()
+        if self._app_ref:
+            self._app_ref._cfg["qt_font_size"] = self._output_font_size
+            save_config(self._app_ref._cfg)
+
+    def fontSmaller_(self, _s):
+        self._output_font_size = max(self._output_font_size - 1, 8)
+        self._apply_font()
+        if self._app_ref:
+            self._app_ref._cfg["qt_font_size"] = self._output_font_size
+            save_config(self._app_ref._cfg)
+
+    def _apply_font(self):
+        f = NSFont.userFixedPitchFontOfSize_(self._output_font_size)
+        self._output_tv.setFont_(f)
+        if hasattr(self, '_output_tv2'):
+            self._output_tv2.setFont_(f)
+
+    def exportSession_(self, _s):
+        from AppKit import NSSavePanel
+        prompt = self._input_fld.stringValue().strip()
+        response = self._output_tv.string() or ""
+        if not prompt and not response:
+            return
+        panel = NSSavePanel.savePanel()
+        panel.setTitle_("Export Quick Test Session")
+        panel.setNameFieldStringValue_("quick-test.md")
+        panel.setAllowedFileTypes_(["md"])
+        NSApp.activateIgnoringOtherApps_(True)
+        if panel.runModal() == NSModalResponseOK:
+            path = Path(panel.URL().path())
+            md = f"## Prompt\n\n{prompt}\n\n## Response\n\n{response}\n"
+            path.write_text(md)
 
     def compareChanged_(self, sender):
         on = bool(sender.state())
@@ -596,8 +654,10 @@ def _make_test_prompt_window(app) -> NSWindow:
         ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
     win.setTitle_("Quick Test Prompt")
     win.center()
+    _constrain_to_screen(win)
     win.setTitlebarAppearsTransparent_(True)
     win.setMovableByWindowBackground_(True)
+    win.setMinSize_((560, 320))
     cv = _vibrancy_content_view(win)
 
     handler = _TestPromptHandler.alloc().init()
@@ -699,7 +759,7 @@ def _make_test_prompt_window(app) -> NSWindow:
     handler._scroll2 = scroll2
 
     tps_lbl = NSTextField.alloc().initWithFrame_(
-        ((_PAD, 12), (W - _PAD*2 - 70, 22)))
+        ((_PAD, 12), (W - _PAD*2 - 242, 22)))
     tps_lbl.setBezeled_(False); tps_lbl.setDrawsBackground_(False)
     tps_lbl.setEditable_(False)
     tps_lbl.setFont_(NSFont.systemFontOfSize_(11))
@@ -708,8 +768,18 @@ def _make_test_prompt_window(app) -> NSWindow:
     cv.addSubview_(tps_lbl)
     handler._tps_lbl = tps_lbl
 
-    cv.addSubview_(_btn("Clear", handler, "clear:",
-                        ((W - _PAD - 64, 12), (64, 22))))
+    # Bottom-right button row: Export | Copy | − | + | Clear
+    bx = W - _PAD - 64
+    cv.addSubview_(_btn("Clear",  handler, "clear:",       ((bx,      12), (64, 22))))
+    bx -= 28
+    cv.addSubview_(_btn("+",      handler, "fontLarger:",  ((bx,      12), (24, 22))))
+    bx -= 28
+    cv.addSubview_(_btn("−",      handler, "fontSmaller:", ((bx,      12), (24, 22))))
+    bx -= 68
+    cv.addSubview_(_btn("Copy",   handler, "copyResponse:",((bx,      12), (64, 22))))
+    bx -= 72
+    cv.addSubview_(_btn("Export", handler, "exportSession:",((bx,     12), (68, 22))))
+    handler._output_font_size = app._cfg.get("qt_font_size", 12)
     return win, handler
 
 
@@ -2167,9 +2237,11 @@ DEFAULTS = {
     "model_notes":    {},         # {model_name: note_string}
     "model_params":   {},         # {model_name: {context, gpu_layers, max_tokens}}
     "hidden_models":  [],         # [model_name, ...]
+    "pinned_models":  [],         # [model_name, ...] pinned to top of menu
     "known_models":   [],         # [model_name, ...] all models ever seen (for new-model detection)
     "recent_models":  [],         # [model_name, ...] max 5, most recent first
     "default_model":  "",         # model name to auto-load on startup (empty = none)
+    "qt_font_size":   12,         # Quick Test output font size
     # Feature flags
     "sync_env":         True,     # write ~/.config/switchman/env on switch
     "sync_aider":       False,    # write ~/.aider.conf.yml on switch
@@ -2192,6 +2264,8 @@ def load_config() -> dict:
                     cfg[key] = {}
             if not isinstance(cfg.get("hidden_models"), list):
                 cfg["hidden_models"] = []
+            if not isinstance(cfg.get("pinned_models"), list):
+                cfg["pinned_models"] = []
             if not isinstance(cfg.get("known_models"), list):
                 cfg["known_models"] = []
             if not isinstance(cfg.get("recent_models"), list):
@@ -2394,6 +2468,27 @@ def kill_port(port: int) -> None:
         except Exception:
             pass
     wait_for_port_free(port, timeout=8)
+
+
+def get_thermal_state() -> str:
+    """Return macOS thermal state: nominal / fair / serious / critical."""
+    try:
+        r = subprocess.run(["pmset", "-g", "therm"], capture_output=True, text=True, timeout=5)
+        out = r.stdout.lower()
+        if "cpu_speed_limit" in out:
+            import re
+            m = re.search(r"cpu_speed_limit\s*=\s*(\d+)", out)
+            if m:
+                limit = int(m.group(1))
+                if limit <= 50:    return "critical"
+                if limit <= 75:    return "serious"
+                if limit <= 95:    return "fair"
+        if "critical" in out:   return "critical"
+        if "serious"  in out:   return "serious"
+        if "fair"     in out:   return "fair"
+    except Exception:
+        pass
+    return "nominal"
 
 
 def get_memory_pressure() -> str:
@@ -3012,7 +3107,8 @@ class Switchman(rumps.App):
         self._model_meta_cache: dict[str, list[str]] = {}
         self._rebuild_pending = False   # set from bg thread; polled by idle timer
         # Feature: memory pressure
-        self._mem_pressure: str = "nominal"
+        self._mem_pressure:  str = "nominal"
+        self._thermal_state: str = "nominal"
         # Feature: error dialog
         self._pending_error: tuple | None = None
         # Feature: server crash watchdog
@@ -3057,18 +3153,21 @@ class Switchman(rumps.App):
             return
 
         SPACE_KEYCODE = 49
+        D_KEYCODE     = 2   # 'd' key
 
         def _callback(proxy, etype, event, refcon):
             try:
-                flags = event.intValueForField_(kCGEventFlagMaskAlternate) if hasattr(
-                    event, 'intValueForField_') else 0
                 keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
                 mods = event.flags() if hasattr(event, 'flags') else 0
-                if keycode == SPACE_KEYCODE and (mods & kCGEventFlagMaskAlternate):
-                    if mods & kCGEventFlagMaskCommand:
+                ALT  = kCGEventFlagMaskAlternate
+                CMD  = kCGEventFlagMaskCommand
+                if keycode == SPACE_KEYCODE and (mods & ALT):
+                    if mods & CMD:
                         self._open_model_search(None)
                     else:
                         self._open_menu_from_hotkey()
+                elif keycode == D_KEYCODE and (mods & ALT) and (mods & CMD):
+                    self._load_default_model_hotkey()
             except Exception:
                 pass
             return event
@@ -3106,6 +3205,15 @@ class Switchman(rumps.App):
                     pass
         except Exception:
             pass
+
+    def _load_default_model_hotkey(self):
+        """⌥⌘D — immediately load the ★ default model."""
+        default = self._cfg.get("default_model", "")
+        if not default or default not in self._model_map or self._loading:
+            return
+        class _S: pass
+        s = _S(); s._model_name = default
+        self._on_select(s)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -3196,7 +3304,8 @@ class Switchman(rumps.App):
 
     def _on_mem_pressure_tick(self, _timer):
         def _check():
-            self._mem_pressure = get_memory_pressure()
+            self._mem_pressure  = get_memory_pressure()
+            self._thermal_state = get_thermal_state()
         threading.Thread(target=_check, daemon=True).start()
 
     # ── Live tok/s polling ────────────────────────────────────────────────────
@@ -3304,6 +3413,19 @@ class Switchman(rumps.App):
 
         menu: list = [rumps.MenuItem(status_text, callback=None), None]
 
+        # ── Pinned models section ─────────────────────────────────────────────────
+        pinned = self._cfg.get("pinned_models", [])
+        pinned_visible = [n for n in pinned if n in self._model_map and n not in hidden]
+        if pinned_visible:
+            menu.append(_menu_header("── Pinned ──"))
+            for pname in pinned_visible:
+                pitem = rumps.MenuItem(f"  {self._display(pname)}", callback=self._on_select)
+                pitem._model_name = pname
+                if self._active == pname and not self._loading:
+                    pitem.state = 1
+                menu.append(pitem)
+            menu.append(None)
+
         # ── Recent models section ─────────────────────────────────────────────────
         default_model = self._cfg.get("default_model")
         recent_names = [
@@ -3386,10 +3508,10 @@ class Switchman(rumps.App):
         note = self._cfg["model_notes"].get(name, "")
         for meta_label in meta:
             parent.add(rumps.MenuItem(meta_label, callback=None))
-        if note:
-            parent.add(rumps.MenuItem(f"  📝 {note}", callback=None))
-        if meta or note:
+        if meta:
             parent.add(None)
+        if note:
+            parent._menuitem.setToolTip_(note)
 
         sel = _sf_item("Select", "play.fill", self._on_select)
         sel._model_name = name
@@ -3406,6 +3528,14 @@ class Switchman(rumps.App):
             self._on_set_default)
         default_item._model_name = name
         parent.add(default_item)
+
+        is_pinned = name in self._cfg.get("pinned_models", [])
+        pin_item = _sf_item(
+            "Unpin from top" if is_pinned else "Pin to top",
+            "pin.slash" if is_pinned else "pin",
+            self._on_toggle_pin)
+        pin_item._model_name = name
+        parent.add(pin_item)
 
         hide_item = _sf_item("Hide", "eye.slash", self._on_hide_model)
         hide_item._model_name = name
@@ -3432,6 +3562,9 @@ class Switchman(rumps.App):
         dot = {"nominal": "🟢", "warn": "🟡", "critical": "🔴"}.get(
             self._mem_pressure, "⚪")
         s.add(rumps.MenuItem(f"{dot}  Memory: {self._mem_pressure}", callback=None))
+        thermal_dot = {"nominal": "🟢", "fair": "🟡", "serious": "🟠", "critical": "🔴"}.get(
+            self._thermal_state, "⚪")
+        s.add(rumps.MenuItem(f"{thermal_dot}  Thermal: {self._thermal_state}", callback=None))
         s.add(None)
         s.add(rumps.MenuItem("  Open Settings…", callback=self._open_settings))
         s.add(rumps.MenuItem("  Manage Profiles…", callback=self._open_profiles))
@@ -3494,7 +3627,11 @@ class Switchman(rumps.App):
             self._stop_flash()
             mem_dot = "🔴" if self._mem_pressure == "critical" else ""
             if self._active:
-                self.title = f"⚡{mem_dot} {self._title_label(self._active)}"
+                base = f"⚡{mem_dot} {self._title_label(self._active)}"
+                if self._ctx_used and self._ctx_max:
+                    ctx_pct = int(self._ctx_used / self._ctx_max * 100)
+                    base += f" {ctx_pct}%"
+                self.title = base
             else:
                 self.title = f"⚡{mem_dot}"
 
@@ -3919,6 +4056,18 @@ class Switchman(rumps.App):
             self._cfg["default_model"] = ""   # toggle off
         else:
             self._cfg["default_model"] = name
+        save_config(self._cfg)
+        self._build_menu()
+
+    def _on_toggle_pin(self, sender: rumps.MenuItem):
+        name = getattr(sender, "_model_name", None)
+        if not name:
+            return
+        pinned = self._cfg.setdefault("pinned_models", [])
+        if name in pinned:
+            pinned.remove(name)
+        else:
+            pinned.insert(0, name)
         save_config(self._cfg)
         self._build_menu()
 
