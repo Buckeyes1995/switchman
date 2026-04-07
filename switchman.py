@@ -546,7 +546,7 @@ class _TestPromptHandler(NSObject):
             qt_max  = cfg.get("qt_max_tokens",  p.get("max_tokens",  512)  if p else 512)
             body = json.dumps({
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": self._build_messages(prompt),
                 "max_tokens": qt_max,
                 "temperature": qt_temp,
                 "stream": True,
@@ -587,6 +587,9 @@ class _TestPromptHandler(NSObject):
         finally:
             self._streaming = False
             self._t_end = time.time()
+            # Record completed assistant reply in conversation history
+            full_reply = getattr(self, '_raw_output', '') + "".join(self._buf)
+            self._record_assistant_reply(full_reply)
 
     # ── WKWebView JS helpers ───────────────────────────────────────────────────
 
@@ -739,6 +742,10 @@ class _TestPromptHandler(NSObject):
             self._wv_clear(self._output_wv2)
         self._tps_lbl.setStringValue_("")
         self._input_fld.setString_("")
+        self._raw_output = ""
+        self._raw_output2 = ""
+        # Also reset conversation if in chat mode
+        self._messages = []
 
     def copyResponse_(self, _s):
         # Copy raw markdown text (accumulated in _raw_output)
@@ -946,6 +953,78 @@ class _TestPromptHandler(NSObject):
                 self._app_ref._cfg["qt_temperature"] = temp
                 self._app_ref._cfg["qt_max_tokens"] = maxtok
                 save_config(self._app_ref._cfg)
+
+    # ── Conversation mode ──────────────────────────────────────────────────────
+
+    def chatToggled_(self, sender):
+        on = bool(sender.state())
+        nb = getattr(self, '_new_conv_btn', None)
+        if nb:
+            nb.setHidden_(not on)
+        for attr in ('_sys_prompt_lbl', '_sys_prompt_scroll'):
+            v = getattr(self, attr, None)
+            if v:
+                v.setHidden_(not on)
+        if on and not getattr(self, '_messages', None):
+            self._messages = []
+        elif not on:
+            self._messages = []
+
+    def newConversation_(self, _s):
+        self._messages = []
+        wv = getattr(self, '_output_wv', None)
+        if wv:
+            self._wv_clear(wv)
+        self._tps_lbl.setStringValue_("")
+        self._raw_output = ""
+
+    def _get_system_prompt(self):
+        tv = getattr(self, '_sys_prompt_tv', None)
+        if tv:
+            return tv.string().strip()
+        return self._app_ref._cfg.get("qt_system_prompt", "") if self._app_ref else ""
+
+    def _build_messages(self, prompt):
+        """Return messages list for current mode (single or conversation)."""
+        chat_on = getattr(self, '_chat_chk', None) and self._chat_chk.state()
+        sys_prompt = self._get_system_prompt()
+        if not chat_on:
+            msgs = []
+            if sys_prompt:
+                msgs.append({"role": "system", "content": sys_prompt})
+            msgs.append({"role": "user", "content": prompt})
+            return msgs
+        # Conversation mode — accumulate history
+        if not hasattr(self, '_messages') or self._messages is None:
+            self._messages = []
+        # Prepend system prompt if set (replace existing system msg)
+        history = [m for m in self._messages if m["role"] != "system"]
+        if sys_prompt:
+            history = [{"role": "system", "content": sys_prompt}] + history
+        history.append({"role": "user", "content": prompt})
+        return history
+
+    def _record_assistant_reply(self, content):
+        """After streaming finishes, record the assistant turn in chat history."""
+        chat_on = getattr(self, '_chat_chk', None) and self._chat_chk.state()
+        if not chat_on:
+            return
+        if not hasattr(self, '_messages') or self._messages is None:
+            self._messages = []
+        prompt = getattr(self, '_prompt_for_compare', "")
+        # Add user + assistant turns
+        sys_prompt = self._get_system_prompt()
+        history = [m for m in self._messages if m["role"] != "system"]
+        history.append({"role": "user", "content": prompt})
+        history.append({"role": "assistant", "content": content})
+        if sys_prompt:
+            self._messages = [{"role": "system", "content": sys_prompt}] + history
+        else:
+            self._messages = history
+        # Save sys prompt to config
+        if self._app_ref and sys_prompt:
+            self._app_ref._cfg["qt_system_prompt"] = sys_prompt
+            save_config(self._app_ref._cfg)
 
     def _save_compare_result(self):
         import datetime
@@ -1471,6 +1550,46 @@ def _make_test_prompt_window(app) -> NSWindow:
     tps_lbl2.setHidden_(True)
     cv.addSubview_(tps_lbl2)
     handler._tps_lbl2 = tps_lbl2
+
+    # Bottom-left: Chat toggle + New Conversation
+    chat_chk = NSButton.alloc().initWithFrame_(((_PAD, 12), (68, 22)))
+    chat_chk.setButtonType_(3)
+    chat_chk.setTitle_("💬 Chat")
+    chat_chk.setState_(0)
+    chat_chk.setTarget_(handler)
+    chat_chk.setAction_("chatToggled:")
+    cv.addSubview_(chat_chk)
+    handler._chat_chk = chat_chk
+
+    new_conv_btn = _btn("↺ New", handler, "newConversation:",
+                        ((_PAD + 72, 12), (60, 22)))
+    new_conv_btn.setHidden_(True)
+    cv.addSubview_(new_conv_btn)
+    handler._new_conv_btn = new_conv_btn
+
+    # System prompt field (collapsible, above separator when chat is on)
+    # We'll overlay it over the sep_y area — show/hide on chat toggle
+    sys_prompt_lbl = _lbl("System:", ((_PAD, sep_y - PARAM_H - _GAP + 4), (_LW, 16)), right=False)
+    sys_prompt_lbl.setHidden_(True); sys_prompt_lbl.setAutoresizingMask_(_TOP)
+    cv.addSubview_(sys_prompt_lbl); handler._sys_prompt_lbl = sys_prompt_lbl
+
+    sys_prompt_scroll = NSScrollView.alloc().initWithFrame_(
+        ((_PAD + _LW + _GAP, sep_y - PARAM_H - _GAP),
+         (W - _PAD*2 - _LW - _GAP, PARAM_H)))
+    sys_prompt_scroll.setHasVerticalScroller_(False)
+    sys_prompt_scroll.setAutohidesScrollers_(True)
+    sys_prompt_scroll.setBorderType_(2)
+    sys_prompt_scroll.setHidden_(True)
+    sys_prompt_scroll.setAutoresizingMask_(_TOP | _WGROW)
+    sys_prompt_tv = NSTextView.alloc().initWithFrame_(
+        ((0, 0), (W - _PAD*2 - _LW - _GAP, PARAM_H)))
+    sys_prompt_tv.setFont_(NSFont.systemFontOfSize_(11))
+    sys_prompt_tv.setRichText_(False)
+    sys_prompt_tv.setString_(app._cfg.get("qt_system_prompt", ""))
+    sys_prompt_scroll.setDocumentView_(sys_prompt_tv)
+    cv.addSubview_(sys_prompt_scroll)
+    handler._sys_prompt_tv = sys_prompt_tv
+    handler._sys_prompt_scroll = sys_prompt_scroll
 
     # Bottom-right button row: Prompts | Export | Copy | − | + | Clear
     bx = W - _PAD - 64
