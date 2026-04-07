@@ -353,6 +353,44 @@ _PROMPT_HISTORY_PATH = Path.home() / ".config" / "switchman" / "prompt_history.j
 _PROMPT_HISTORY_MAX  = 200
 
 
+_PROMPT_LIBRARY: dict[str, list[str]] = {
+    "Coding": [
+        "Implement a thread-safe LRU cache in Python with O(1) get and put. Show the full class with tests.",
+        "Write a Go function that parses a semi-structured log line (timestamp, level, message, optional key=value pairs) into a struct. Handle malformed input gracefully.",
+        "Explain the difference between Go's sync.Mutex and sync.RWMutex. When would you use each? Show a concrete example where the wrong choice causes a bug.",
+        "Write a Python decorator that retries a function up to N times with exponential backoff, logging each attempt. Make it work for both sync and async functions.",
+        "Design a simple event bus in TypeScript with typed events, subscribe/unsubscribe, and one-time listeners. No external dependencies.",
+    ],
+    "Reasoning": [
+        "A bat and a ball cost $1.10 total. The bat costs $1 more than the ball. How much does the ball cost? Show your reasoning step by step, then verify your answer.",
+        "You have 12 balls, one of which is slightly heavier or lighter than the others. Using a balance scale exactly 3 times, identify the odd ball and whether it's heavier or lighter.",
+        "Three logicians walk into a bar. The bartender asks 'Does everyone want a drink?' The first says 'I don't know.' The second says 'I don't know.' The third says 'Yes.' Explain why.",
+        "A snail climbs a 10-meter pole. Each day it climbs 3 meters, each night it slides back 2 meters. On which day does it reach the top? Show your work.",
+        "Explain the Monty Hall problem. Why does switching doors improve your odds? Give both an intuitive explanation and a mathematical proof.",
+    ],
+    "Architecture": [
+        "Design a distributed rate limiter for a high-traffic API gateway handling 500k req/s across 20 nodes. Cover algorithm choice, clock skew, partition behavior, and memory footprint.",
+        "You're designing a chat system for 10 million concurrent users. Walk through your data model, message delivery guarantees, presence tracking, and how you'd handle a thundering herd on reconnect.",
+        "Compare event sourcing + CQRS vs traditional CRUD for a financial ledger. What are the real tradeoffs in practice, not just theory? When would you NOT use event sourcing?",
+        "Explain the CAP theorem with a concrete example for each of the three impossible combinations. Which real databases fall into each category and why?",
+        "Design the schema and query patterns for a social graph where you need to find mutual friends within 2 hops for 100M users in under 50ms.",
+    ],
+    "Explanation": [
+        "Explain how transformers work from first principles — attention, positional encoding, and why the architecture replaced RNNs. Assume I understand linear algebra but not ML.",
+        "What actually happens when you type a URL in a browser and hit Enter? Go as deep as you can — DNS, TCP, TLS, HTTP, rendering pipeline.",
+        "Explain memory ordering in modern CPUs. What is the difference between acquire/release semantics and sequential consistency? Why does this matter in lock-free programming?",
+        "How does garbage collection work in Go? Explain the tri-color mark-and-sweep algorithm, write barriers, and how the GC pacer decides when to run.",
+        "Explain how Linux handles a page fault from the moment the CPU traps to when the process resumes. Cover demand paging, swap, and OOM.",
+    ],
+    "Creative": [
+        "Write the opening chapter of a hard sci-fi novel where the protagonist discovers that the universe's physical constants are slowly drifting. The tone should be literary, not pulpy.",
+        "Write a dialogue between a senior engineer and a junior engineer reviewing code. The senior engineer is trying to explain why the junior's clever solution is actually worse than the boring one.",
+        "Write a short story told entirely through git commit messages, Slack messages, and error logs. Something goes badly wrong.",
+        "Write a technical post-mortem for a fictional but plausible production outage. Include timeline, root cause, contributing factors, and action items. Make it feel real.",
+        "Write a children's book explanation of how the internet works, suitable for a 6-year-old. No analogies involving roads or highways — find something more creative.",
+    ],
+}
+
 def _load_prompt_history() -> list[str]:
     try:
         return json.loads(_PROMPT_HISTORY_PATH.read_text())
@@ -371,80 +409,118 @@ def _save_prompt_history(history: list[str], prompt: str) -> list[str]:
     return history
 
 
+class _SuggestionTableSource(NSObject):
+    """NSTableView data source/delegate for generated prompt suggestions."""
+
+    def numberOfRowsInTableView_(self, tv):
+        return len(self._suggestions)
+
+    def tableView_objectValueForTableColumn_row_(self, tv, col, row):
+        return self._suggestions[row] if row < len(self._suggestions) else ""
+
+    def tableView_shouldSelectRow_(self, tv, row):
+        return True
+
+
 class _TestPromptHandler(NSObject):
     """Action target for the non-modal Quick Test Prompt window."""
 
     # ── Prompt history (up/down arrow navigation) ─────────────────────────────
 
-    def control_textView_doCommandBySelector_(self, control, textView, sel):
+    def textView_doCommandBySelector_(self, textView, sel):
         name = sel if isinstance(sel, str) else str(sel)
-        # Shift+Enter → insert newline instead of sending
+        # Enter (no Shift) → submit; Shift+Enter → let NSTextView insert newline normally
         if "insertNewline" in name:
             from AppKit import NSApp
             mods = NSApp.currentEvent().modifierFlags() if NSApp.currentEvent() else 0
             SHIFT = 1 << 17   # NSEventModifierFlagShift
             if mods & SHIFT:
-                cur = self._input_fld.stringValue()
-                self._input_fld.setStringValue_(cur + "\n")
-                return True
-            return False   # let normal Enter/Return fire send_
+                return False   # default: NSTextView inserts newline
+            self.send_(None)
+            return True
         if "moveUp" in name:
             hist = self._history
             if not hist:
                 return False
             if self._history_idx == -1:
-                self._history_saved = self._input_fld.stringValue()
+                self._history_saved = self._input_fld.string()
                 self._history_idx = 0
             elif self._history_idx < len(hist) - 1:
                 self._history_idx += 1
-            self._input_fld.setStringValue_(hist[self._history_idx])
+            self._input_fld.setString_(hist[self._history_idx])
             return True
         if "moveDown" in name:
             if self._history_idx == -1:
                 return False
             if self._history_idx == 0:
                 self._history_idx = -1
-                self._input_fld.setStringValue_(getattr(self, "_history_saved", ""))
+                self._input_fld.setString_(getattr(self, "_history_saved", ""))
             else:
                 self._history_idx -= 1
-                self._input_fld.setStringValue_(self._history[self._history_idx])
+                self._input_fld.setString_(self._history[self._history_idx])
             return True
         return False
 
     def send_(self, _s):
-        prompt = self._input_fld.stringValue().strip()
+        prompt = self._input_fld.string().strip()
         if not prompt or self._streaming:
+            return
+        if self._app_ref and getattr(self._app_ref, '_loading', False):
+            self._output_tv.setString_("⏳ Model is loading…")
+            self._pending_prompt = prompt
+            self._load_wait_timer = rumps.Timer(self._waitForLoadThenSend_, 0.5)
+            self._load_wait_timer.start()
             return
         self._history = _save_prompt_history(self._history, prompt)
         self._history_idx = -1
-        self._output_tv.setString_("")
+        self._output_tv.setString_("⏳ Generating…")
+        self._first_chunk = True
         self._tps_lbl.setStringValue_("…")
         self._streaming = True
         self._buf: list[str] = []
         self._t0 = time.time()
+        self._t_end = None
         self._tok_count = 0
         self._t_first = None
         self._ttft_shown = False
         self._prompt_tokens = 0
         self._ctx_max = 0
+        # Show spinner until first token arrives
+        if hasattr(self, '_spinner'):
+            self._spinner.setHidden_(False)
+            self._spinner.startAnimation_(None)
+        # Update model 1 label to reflect current active model
+        if hasattr(self, '_model1_lbl') and self._app_ref:
+            self._model1_lbl.setStringValue_(self._app_ref._active or "Model 1")
         self._drain_timer = rumps.Timer(self.drainTick_, 0.1)
         self._drain_timer.start()
         threading.Thread(target=self._do_stream,
                          args=(prompt,), daemon=True).start()
+        self._prompt_for_compare = prompt
+        self._sequential_phase = None
         if hasattr(self, '_buf2'):
             self._buf2.clear()
             self._streaming2 = False
             self._tok_count2 = 0
             self._t_first2 = None
             self._ttft_shown2 = False
-            model2_name = None
-            if hasattr(self, '_model2_popup') and hasattr(self, '_compare_chk'):
-                if self._compare_chk.state():
-                    model2_name = self._model2_popup.titleOfSelectedItem()
-            if model2_name:
-                self._streaming2 = True
-                threading.Thread(target=self._do_stream2,
-                                 args=(prompt, model2_name), daemon=True).start()
+            self._t02 = time.time()
+            self._t_end2 = None
+            if hasattr(self, '_output_tv2'):
+                self._output_tv2.setString_("")
+            if hasattr(self, '_tps_lbl2'):
+                self._tps_lbl2.setStringValue_("")
+            compare_on = (hasattr(self, '_compare_chk') and self._compare_chk.state()
+                          and hasattr(self, '_model2_popup'))
+            if compare_on:
+                model2_name = self._model2_popup.titleOfSelectedItem()
+                if model2_name:
+                    self._model2_name = model2_name
+                    self._streaming2 = True   # keep drain timer alive during whole sequence
+                    self._sequential_phase = "waiting_m1"
+                    if hasattr(self, '_output_tv2'):
+                        self._output_tv2.setString_(
+                            "⏳ Waiting for Model 1 to finish…")
 
     def _do_stream(self, prompt):
         try:
@@ -496,27 +572,91 @@ class _TestPromptHandler(NSObject):
             self._buf.append(f"\n\n[Error: {e}]")
         finally:
             self._streaming = False
+            self._t_end = time.time()
 
     def drainTick_(self, timer):
-        from AppKit import NSAttributedString
+        from AppKit import NSAttributedString, NSColor, NSForegroundColorAttributeName  # noqa: F811
+        _attrs = {NSForegroundColorAttributeName: NSColor.labelColor()}
         if self._buf:
             chunk = "".join(self._buf)
             self._buf.clear()
+            if getattr(self, '_first_chunk', False):
+                self._output_tv.setString_("")
+                self._first_chunk = False
             ts = self._output_tv.textStorage()
             ts.appendAttributedString_(
-                NSAttributedString.alloc().initWithString_(chunk))
+                NSAttributedString.alloc().initWithString_attributes_(chunk, _attrs))
             self._output_tv.scrollRangeToVisible_(
                 (self._output_tv.string().length(), 0))
-        # Drain buf2 into second output view if compare mode is active
+        # Stop spinner on first token
+        if self._t_first is not None and hasattr(self, '_spinner') and not self._spinner.isHidden():
+            self._spinner.stopAnimation_(None)
+            self._spinner.setHidden_(True)
+        # Sequential compare state machine (runs on main thread — safe to call _load_model_by_name)
+        phase = getattr(self, '_sequential_phase', None)
+        # Flash helper for right panel status messages (every 5 ticks = 0.5s)
+        self._cmp_tick = getattr(self, '_cmp_tick', 0) + 1
+        _flash_on = (self._cmp_tick % 5) < 3   # on for 3 ticks, off for 2
+        def _set_tv2_flash(msg):
+            if not hasattr(self, '_output_tv2'):
+                return
+            color = NSColor.labelColor() if _flash_on else NSColor.secondaryLabelColor()
+            astr = NSAttributedString.alloc().initWithString_attributes_(
+                msg, {NSForegroundColorAttributeName: color})
+            self._output_tv2.textStorage().setAttributedString_(astr)
+        if phase == "waiting_m1" and not self._streaming and not self._buf:
+            # Model 1 done — trigger model 2 switch
+            model2_name = getattr(self, '_model2_name', None)
+            if model2_name and self._app_ref:
+                self._sequential_phase = "loading"
+                self._cmp_tick = 0
+                if hasattr(self, '_output_tv2'):
+                    self._output_tv2.setString_(f"⏳ Switching to {model2_name}…")
+                self._app_ref._load_model_by_name(model2_name, skip_memory_check=True)
+        elif phase == "waiting_m1":
+            _set_tv2_flash("⏳ Waiting for Model 1 to finish…")
+        elif phase == "loading":
+            app = self._app_ref
+            model2_name = getattr(self, '_model2_name', None)
+            if app and not app._loading:
+                # Model 2 is ready — start its stream
+                self._sequential_phase = "streaming2"
+                self._cmp_tick = 0
+                self._tok_count2 = 0
+                self._t_first2 = None
+                self._ttft_shown2 = False
+                self._t02 = time.time()
+                self._first_chunk2 = True
+                if hasattr(self, '_output_tv2'):
+                    self._output_tv2.setString_("⏳ Generating…")
+                if hasattr(self, '_tps_lbl2'):
+                    self._tps_lbl2.setStringValue_("…")
+                prompt = getattr(self, '_prompt_for_compare', "")
+                threading.Thread(target=self._do_stream2,
+                                 args=(prompt, model2_name), daemon=True).start()
+            elif app and app._loading:
+                status = getattr(app, '_load_status', 'Loading…')
+                estimate = getattr(app, '_load_time_estimate', None)
+                elapsed = time.time() - (app._load_start_time or time.time())
+                if estimate and estimate > elapsed:
+                    remaining = int(estimate - elapsed)
+                    status = f"{status}  (~{remaining}s remaining)"
+                elif estimate:
+                    status = f"{status}  (taking longer than usual)"
+                _set_tv2_flash(f"⏳ {status}")
+        # Drain buf2 into second output view (only during streaming2 phase)
         if hasattr(self, '_buf2') and self._buf2 and hasattr(self, '_output_tv2'):
             chunk2 = "".join(self._buf2)
             self._buf2.clear()
+            if getattr(self, '_first_chunk2', False):
+                self._output_tv2.setString_("")
+                self._first_chunk2 = False
             ts2 = self._output_tv2.textStorage()
             ts2.appendAttributedString_(
-                NSAttributedString.alloc().initWithString_(chunk2))
+                NSAttributedString.alloc().initWithString_attributes_(chunk2, _attrs))
             self._output_tv2.scrollRangeToVisible_(
                 (self._output_tv2.string().length(), 0))
-        elapsed = time.time() - self._t0
+        elapsed = (self._t_end or time.time()) - self._t0
         if self._tok_count > 0 and elapsed > 0:
             ttft_part = ""
             if self._t_first is not None and not self._ttft_shown:
@@ -540,6 +680,23 @@ class _TestPromptHandler(NSObject):
                     self._app_ref._update_title()
             self._tps_lbl.setStringValue_(
                 f"{ttft_part}{self._tok_count / elapsed:.1f} tok/s  ({self._tok_count} tokens){ctx_part}")
+        # Model 2 tok/s stats
+        if hasattr(self, '_tps_lbl2'):
+            elapsed2 = (getattr(self, '_t_end2', None) or time.time()) - getattr(self, '_t02', self._t0)
+            tok2 = getattr(self, '_tok_count2', 0)
+            t_first2 = getattr(self, '_t_first2', None)
+            t02 = getattr(self, '_t02', self._t0)
+            if tok2 > 0 and elapsed2 > 0:
+                ttft2_part = ""
+                if t_first2 is not None and not getattr(self, '_ttft_shown2', False):
+                    ttft2_ms = (t_first2 - t02) * 1000
+                    ttft2_part = f"TTFT {ttft2_ms:.0f}ms  |  "
+                    self._ttft_shown2 = True
+                elif getattr(self, '_ttft_shown2', False) and t_first2 is not None:
+                    ttft2_ms = (t_first2 - t02) * 1000
+                    ttft2_part = f"TTFT {ttft2_ms:.0f}ms  |  "
+                self._tps_lbl2.setStringValue_(
+                    f"{ttft2_part}{tok2 / elapsed2:.1f} tok/s  ({tok2} tokens)")
         streaming2 = getattr(self, '_streaming2', False)
         buf2_empty = not getattr(self, '_buf2', [])
         if not self._streaming and not self._buf and not streaming2 and buf2_empty:
@@ -548,7 +705,7 @@ class _TestPromptHandler(NSObject):
     def clear_(self, _s):
         self._output_tv.setString_("")
         self._tps_lbl.setStringValue_("")
-        self._input_fld.setStringValue_("")
+        self._input_fld.setString_("")
         if hasattr(self, '_output_tv2'):
             self._output_tv2.setString_("")
 
@@ -581,7 +738,7 @@ class _TestPromptHandler(NSObject):
 
     def exportSession_(self, _s):
         from AppKit import NSSavePanel
-        prompt = self._input_fld.stringValue().strip()
+        prompt = self._input_fld.string().strip()
         response = self._output_tv.string() or ""
         if not prompt and not response:
             return
@@ -595,6 +752,66 @@ class _TestPromptHandler(NSObject):
             md = f"## Prompt\n\n{prompt}\n\n## Response\n\n{response}\n"
             path.write_text(md)
 
+    def _loadStatusTick_(self, timer):
+        """Continuously poll app._loading and show status + estimate in tps_lbl."""
+        from AppKit import NSColor, NSForegroundColorAttributeName, NSAttributedString
+        app = self._app_ref
+        if not app:
+            return
+        if not app._loading or self._streaming:
+            # Clear load status if we were showing it
+            if getattr(self, '_showing_load_status', False):
+                self._tps_lbl.setStringValue_("")
+                self._showing_load_status = False
+            return
+        self._showing_load_status = True
+        status = getattr(app, '_load_status', 'Loading…')
+        estimate = getattr(app, '_load_time_estimate', None)
+        if estimate and app._load_start_time:
+            elapsed = time.time() - app._load_start_time
+            if estimate > elapsed:
+                remaining = int(estimate - elapsed)
+                status = f"{status}  (~{remaining}s remaining)"
+            else:
+                status = f"{status}  (taking longer than usual)"
+        self._load_flash = not getattr(self, '_load_flash', False)
+        color = NSColor.labelColor() if self._load_flash else NSColor.secondaryLabelColor()
+        astr = NSAttributedString.alloc().initWithString_attributes_(
+            f"⏳ {status}", {NSForegroundColorAttributeName: color})
+        self._tps_lbl.setAttributedStringValue_(astr)
+
+    def _waitForLoadThenSend_(self, timer):
+        from AppKit import NSColor, NSForegroundColorAttributeName, NSAttributedString
+        app = self._app_ref
+        if app and app._loading:
+            status = getattr(app, '_load_status', 'Loading…')
+            estimate = getattr(app, '_load_time_estimate', None)
+            elapsed = time.time() - (app._load_start_time or time.time())
+            if estimate and estimate > elapsed:
+                remaining = int(estimate - elapsed)
+                status = f"{status}  (~{remaining}s remaining)"
+            elif estimate:
+                status = f"{status}  (taking longer than usual)"
+            self._flash_tick = not getattr(self, '_flash_tick', False)
+            color = NSColor.labelColor() if self._flash_tick else NSColor.secondaryLabelColor()
+            astr = NSAttributedString.alloc().initWithString_attributes_(
+                f"⏳ {status}", {NSForegroundColorAttributeName: color})
+            self._output_tv.textStorage().setAttributedString_(astr)
+            return
+        timer.stop()
+        self._load_wait_timer = None
+        self._flash_tick = False
+        prompt = getattr(self, '_pending_prompt', None)
+        self._pending_prompt = None
+        if prompt:
+            self._input_fld.setString_(prompt)
+            self.send_(None)
+
+    def model2PopupChanged_(self, sender):
+        if hasattr(self, '_model2_header_lbl'):
+            self._model2_header_lbl.setStringValue_(
+                sender.titleOfSelectedItem() or "Model 2")
+
     def compareChanged_(self, sender):
         on = bool(sender.state())
         if hasattr(self, '_model2_popup'):
@@ -603,6 +820,150 @@ class _TestPromptHandler(NSObject):
             self._model2_lbl.setHidden_(not on)
         if hasattr(self, '_scroll2'):
             self._scroll2.setHidden_(not on)
+        if hasattr(self, '_model2_header_lbl'):
+            self._model2_header_lbl.setHidden_(not on)
+            if on and hasattr(self, '_model2_popup'):
+                self._model2_header_lbl.setStringValue_(
+                    self._model2_popup.titleOfSelectedItem() or "Model 2")
+        if hasattr(self, '_tps_lbl2'):
+            self._tps_lbl2.setHidden_(not on)
+        if hasattr(self, '_vdiv'):
+            self._vdiv.setHidden_(not on)
+
+    def promptLibrarySelected_(self, sender):
+        """Fill input from a library prompt menu item."""
+        text = sender.representedObject() or sender.title()
+        if text:
+            self._input_fld.setString_(str(text))
+
+    def generateSuggestions_(self, _s):
+        """Ask the loaded model to generate 5 test prompts, then show a picker."""
+        if not self._app_ref:
+            return
+        cfg = self._app_ref._cfg
+        port = cfg.get("omlx_port", 8000)
+        api_key = cfg.get("omlx_api_key", "")
+        model = self._app_ref._active or ""
+        if not model:
+            return
+        # Show a small status panel while generating
+        from AppKit import (NSPanel, NSTextField as _NSTextField2,
+                            NSProgressIndicator as _NSPIg)
+        gwin = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (340, 80)), 15, 2, False)
+        gwin.setTitle_("Generating suggestions…")
+        gwin.center()
+        gcv = _vibrancy_content_view(gwin)
+        glbl = _NSTextField2.alloc().initWithFrame_(((_PAD, 28), (300, 22)))
+        glbl.setBezeled_(False); glbl.setDrawsBackground_(False)
+        glbl.setEditable_(False)
+        glbl.setStringValue_("Asking the model for prompt ideas…")
+        gcv.addSubview_(glbl)
+        gspin = _NSPIg.alloc().initWithFrame_(((300, 30), (16, 16)))
+        gspin.setStyle_(1); gspin.startAnimation_(None)
+        gcv.addSubview_(gspin)
+        gwin.makeKeyAndOrderFront_(None)
+        self._gen_win = gwin
+
+        threading.Thread(target=self._do_generate_suggestions,
+                         args=(port, api_key, model, gwin), daemon=True).start()
+
+    def _do_generate_suggestions(self, port, api_key, model, status_win):
+        meta = (
+            "Generate exactly 5 diverse, interesting test prompts for evaluating a large language model. "
+            "Return ONLY a numbered list (1. ... 2. ... etc.), one prompt per line, no extra commentary. "
+            "Make them varied: include coding, reasoning, explanation, and creative tasks. "
+            "Each prompt should be self-contained and 1-3 sentences."
+        )
+        suggestions = []
+        try:
+            body = json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": meta}],
+                "max_tokens": 600,
+                "stream": False,
+            }).encode()
+            req = urllib.request.Request(
+                f"http://localhost:{port}/v1/chat/completions",
+                data=body,
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+            text = data["choices"][0]["message"]["content"]
+            for line in text.splitlines():
+                line = line.strip()
+                if line and line[0].isdigit() and ". " in line:
+                    suggestions.append(line.split(". ", 1)[1].strip())
+        except Exception:
+            pass
+        # Back on main thread via timer
+        self._gen_suggestions = suggestions
+        self._gen_status_win = status_win
+        t = rumps.Timer(self._showSuggestionsPicker_, 0)
+        t.start()
+
+    def _showSuggestionsPicker_(self, timer):
+        timer.stop()
+        status_win = getattr(self, '_gen_status_win', None)
+        if status_win:
+            status_win.orderOut_(None)
+        suggestions = getattr(self, '_gen_suggestions', [])
+        if not suggestions:
+            return
+        from AppKit import (NSPanel, NSTableView, NSScrollView as _NSScrollViewP,
+                            NSTableColumn)
+        PW, PH = 560, 260
+        picker = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (PW, PH)), 15, 2, False)
+        picker.setTitle_("Generated Prompt Suggestions")
+        picker.center()
+        pcv = _vibrancy_content_view(picker)
+        # Label
+        lbl = _lbl("Select a prompt to use:", ((_PAD, PH - _PAD - 20), (PW - _PAD*2, 20)))
+        pcv.addSubview_(lbl)
+        # Table
+        tbl_scroll = _NSScrollViewP.alloc().initWithFrame_(
+            ((_PAD, 44), (PW - _PAD*2, PH - _PAD - 20 - _GAP - 44)))
+        tbl_scroll.setHasVerticalScroller_(True)
+        tbl = NSTableView.alloc().initWithFrame_(((0, 0), (PW - _PAD*2, 200)))
+        col = NSTableColumn.alloc().initWithIdentifier_("prompt")
+        col.setWidth_(PW - _PAD*2 - 20)
+        col.headerCell().setStringValue_("Prompt")
+        tbl.addTableColumn_(col)
+        tbl.setUsesAlternatingRowBackgroundColors_(True)
+        tbl.setRowHeight_(36)
+        tbl_scroll.setDocumentView_(tbl)
+        pcv.addSubview_(tbl_scroll)
+        # Use button
+        use_btn = _btn("Use This Prompt", self, "useSuggestion:",
+                       ((PW - _PAD - 140, 10), (140, 24)))
+        pcv.addSubview_(use_btn)
+        # Wire data source via simple delegate object
+        ds = _SuggestionTableSource.alloc().init()
+        ds._suggestions = suggestions
+        ds._handler = self
+        ds._picker = picker
+        tbl.setDataSource_(ds)
+        tbl.setDelegate_(ds)
+        tbl.reloadData()
+        self._suggestion_table = tbl
+        self._suggestion_ds = ds  # keep alive
+        self._suggestion_picker = picker
+        picker.makeKeyAndOrderFront_(None)
+
+    def useSuggestion_(self, _s):
+        tbl = getattr(self, '_suggestion_table', None)
+        ds = getattr(self, '_suggestion_ds', None)
+        if tbl is None or ds is None:
+            return
+        row = tbl.selectedRow()
+        if row >= 0 and row < len(ds._suggestions):
+            self._input_fld.setString_(ds._suggestions[row])
+        picker = getattr(self, '_suggestion_picker', None)
+        if picker:
+            picker.orderOut_(None)
 
     def _do_stream2(self, prompt, model2_name):
         try:
@@ -644,12 +1005,13 @@ class _TestPromptHandler(NSObject):
             self._buf2.append(f"\n\n[Error: {e}]")
         finally:
             self._streaming2 = False
+            self._t_end2 = time.time()
 
 
 def _make_test_prompt_window(app) -> NSWindow:
     """Build and return the Quick Test Prompt NSWindow (non-modal)."""
     W, H = 760, 480
-    BOT = 48
+    BOT = 72   # bottom margin: row1=12 (buttons), row2=40 (stats)
     win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     win.setTitle_("Quick Test Prompt")
@@ -683,17 +1045,27 @@ def _make_test_prompt_window(app) -> NSWindow:
     handler._history_saved = ""
     # handler kept alive by caller storing it alongside the window
 
-    INPUT_H = 28
-    ROW2_Y = H - _PAD - INPUT_H - _GAP - INPUT_H  # y for second row
-    cv.addSubview_(_lbl("Prompt:", ((_PAD, H - _PAD - INPUT_H), (_LW, INPUT_H)),
+    INPUT_H = 64   # multi-line input height (~4 lines)
+    CHK_H = 22     # compare row control height
+    ROW2_Y = H - _PAD - INPUT_H - _GAP - CHK_H  # y for second row (checkbox row)
+    cv.addSubview_(_lbl("Prompt:", ((_PAD, H - _PAD - INPUT_H + (INPUT_H - 18) // 2), (_LW, 18)),
                         right=False))
-    input_fld = NSTextField.alloc().initWithFrame_(
+    input_scroll = NSScrollView.alloc().initWithFrame_(
         ((_PAD + _LW + _GAP, H - _PAD - INPUT_H),
          (W - _PAD*2 - _LW - _GAP - 70, INPUT_H)))
-    input_fld.setFont_(NSFont.systemFontOfSize_(13))
-    input_fld.setDelegate_(handler)
-    cv.addSubview_(input_fld)
-    handler._input_fld = input_fld
+    input_scroll.setHasVerticalScroller_(True)
+    input_scroll.setAutohidesScrollers_(True)
+    input_scroll.setBorderType_(2)  # NSBezelBorder
+    input_tv = NSTextView.alloc().initWithFrame_(
+        ((0, 0), (W - _PAD*2 - _LW - _GAP - 70, INPUT_H)))
+    input_tv.setFont_(NSFont.systemFontOfSize_(13))
+    input_tv.setDelegate_(handler)
+    input_tv.setRichText_(False)
+    input_tv.setAutomaticQuoteSubstitutionEnabled_(False)
+    input_tv.setAutomaticDashSubstitutionEnabled_(False)
+    input_scroll.setDocumentView_(input_tv)
+    cv.addSubview_(input_scroll)
+    handler._input_fld = input_tv
 
     send_btn = _btn("Send", handler, "send:",
                     ((W - _PAD - 64, H - _PAD - INPUT_H), (64, INPUT_H)), "\r")
@@ -701,7 +1073,7 @@ def _make_test_prompt_window(app) -> NSWindow:
 
     # Compare checkbox
     compare_chk = NSButton.alloc().initWithFrame_(
-        ((_PAD, ROW2_Y), (140, INPUT_H)))
+        ((_PAD, ROW2_Y), (140, CHK_H)))
     compare_chk.setButtonType_(3)
     compare_chk.setTitle_("Compare models")
     compare_chk.setState_(0)
@@ -711,16 +1083,18 @@ def _make_test_prompt_window(app) -> NSWindow:
     handler._compare_chk = compare_chk
 
     # Model2 label + popup (hidden by default)
-    model2_lbl = _lbl("Model 2:", ((_PAD + 145, ROW2_Y), (70, INPUT_H)), right=False)
+    model2_lbl = _lbl("Model 2:", ((_PAD + 145, ROW2_Y - 3), (70, CHK_H + 6)), right=False)
     model2_lbl.setHidden_(True)
     cv.addSubview_(model2_lbl)
     handler._model2_lbl = model2_lbl
 
     all_models = sorted(app._model_map.keys()) if hasattr(app, '_model_map') else []
     model2_popup = NSPopUpButton.alloc().initWithFrame_(
-        ((_PAD + 145 + 75, ROW2_Y - 2), (W - _PAD*2 - 145 - 75 - 70, INPUT_H + 4)))
+        ((_PAD + 145 + 75, ROW2_Y - 2), (W - _PAD*2 - 145 - 75 - 70, CHK_H + 4)))
     for m in (all_models or ["(no models)"]):
         model2_popup.addItemWithTitle_(m)
+    model2_popup.setTarget_(handler)
+    model2_popup.setAction_("model2PopupChanged:")
     model2_popup.setHidden_(True)
     cv.addSubview_(model2_popup)
     handler._model2_popup = model2_popup
@@ -732,18 +1106,54 @@ def _make_test_prompt_window(app) -> NSWindow:
     sep.setBoxType_(2)  # NSBoxSeparator
     cv.addSubview_(sep)
 
-    # Output scroll area — left panel (always visible)
+    # Model name labels above output panels (hidden until compare is on)
+    LBL_H = 18
     output_top = sep_y - 4
-    output_h = output_top - BOT
+    output_h = output_top - BOT - LBL_H - 2
     half_w = (W - _PAD*2 - _GAP) // 2
+
+    model1_lbl = NSTextField.alloc().initWithFrame_(
+        ((_PAD, BOT + output_h + 2), (half_w, LBL_H)))
+    model1_lbl.setBezeled_(False); model1_lbl.setDrawsBackground_(False)
+    model1_lbl.setEditable_(False); model1_lbl.setSelectable_(False)
+    model1_lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
+    from AppKit import NSColor as _NSColorLbl
+    model1_lbl.setTextColor_(_NSColorLbl.secondaryLabelColor())
+    model1_lbl.setStringValue_(app._active or "Model 1")
+    cv.addSubview_(model1_lbl)
+    handler._model1_lbl = model1_lbl
+
+    model2_header_lbl = NSTextField.alloc().initWithFrame_(
+        ((_PAD + half_w + _GAP, BOT + output_h + 2), (half_w, LBL_H)))
+    model2_header_lbl.setBezeled_(False); model2_header_lbl.setDrawsBackground_(False)
+    model2_header_lbl.setEditable_(False); model2_header_lbl.setSelectable_(False)
+    model2_header_lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
+    model2_header_lbl.setTextColor_(_NSColorLbl.secondaryLabelColor())
+    model2_header_lbl.setStringValue_("Model 2")
+    model2_header_lbl.setHidden_(True)
+    cv.addSubview_(model2_header_lbl)
+    handler._model2_header_lbl = model2_header_lbl
+
+    # Output scroll area — left panel (always visible)
     scroll = NSScrollView.alloc().initWithFrame_(
         ((_PAD, BOT), (half_w, output_h)))
     scroll.setHasVerticalScroller_(True); scroll.setAutohidesScrollers_(True)
     tv = NSTextView.alloc().initWithFrame_(((0, 0), (half_w, output_h)))
     tv.setFont_(NSFont.userFixedPitchFontOfSize_(12))
+    tv.setTextColor_(_NSColorLbl.labelColor())
+    tv.setBackgroundColor_(_NSColorLbl.clearColor())
+    tv.setDrawsBackground_(False)
     tv.setEditable_(False)
     scroll.setDocumentView_(tv); cv.addSubview_(scroll)
     handler._output_tv = tv
+
+    # Vertical divider between the two output panels (hidden by default)
+    vdiv = _NSBox.alloc().initWithFrame_(
+        ((_PAD + half_w + _GAP // 2, BOT), (1, output_h + LBL_H + 2)))
+    vdiv.setBoxType_(2)  # NSBoxSeparator
+    vdiv.setHidden_(True)
+    cv.addSubview_(vdiv)
+    handler._vdiv = vdiv
 
     # Right panel for compare (hidden by default)
     scroll2 = NSScrollView.alloc().initWithFrame_(
@@ -751,6 +1161,9 @@ def _make_test_prompt_window(app) -> NSWindow:
     scroll2.setHasVerticalScroller_(True); scroll2.setAutohidesScrollers_(True)
     tv2 = NSTextView.alloc().initWithFrame_(((0, 0), (half_w, output_h)))
     tv2.setFont_(NSFont.userFixedPitchFontOfSize_(12))
+    tv2.setTextColor_(_NSColorLbl.labelColor())
+    tv2.setBackgroundColor_(_NSColorLbl.clearColor())
+    tv2.setDrawsBackground_(False)
     tv2.setEditable_(False)
     scroll2.setDocumentView_(tv2)
     scroll2.setHidden_(True)
@@ -758,8 +1171,16 @@ def _make_test_prompt_window(app) -> NSWindow:
     handler._output_tv2 = tv2
     handler._scroll2 = scroll2
 
+    # Indeterminate progress spinner (shown while waiting for first token)
+    from AppKit import NSProgressIndicator as _NSPI
+    spinner = _NSPI.alloc().initWithFrame_(((_PAD, BOT + output_h//2 - 8), (16, 16)))
+    spinner.setStyle_(1)   # NSProgressIndicatorStyleSpinning
+    spinner.setHidden_(True)
+    cv.addSubview_(spinner)
+    handler._spinner = spinner
+
     tps_lbl = NSTextField.alloc().initWithFrame_(
-        ((_PAD, 12), (W - _PAD*2 - 242, 22)))
+        ((_PAD, 40), (half_w, 22)))
     tps_lbl.setBezeled_(False); tps_lbl.setDrawsBackground_(False)
     tps_lbl.setEditable_(False)
     tps_lbl.setFont_(NSFont.systemFontOfSize_(11))
@@ -768,7 +1189,17 @@ def _make_test_prompt_window(app) -> NSWindow:
     cv.addSubview_(tps_lbl)
     handler._tps_lbl = tps_lbl
 
-    # Bottom-right button row: Export | Copy | − | + | Clear
+    tps_lbl2 = NSTextField.alloc().initWithFrame_(
+        ((_PAD + half_w + _GAP, 40), (half_w, 22)))
+    tps_lbl2.setBezeled_(False); tps_lbl2.setDrawsBackground_(False)
+    tps_lbl2.setEditable_(False)
+    tps_lbl2.setFont_(NSFont.systemFontOfSize_(11))
+    tps_lbl2.setTextColor_(_NSColor.secondaryLabelColor())
+    tps_lbl2.setHidden_(True)
+    cv.addSubview_(tps_lbl2)
+    handler._tps_lbl2 = tps_lbl2
+
+    # Bottom-right button row: Prompts | Export | Copy | − | + | Clear
     bx = W - _PAD - 64
     cv.addSubview_(_btn("Clear",  handler, "clear:",       ((bx,      12), (64, 22))))
     bx -= 28
@@ -779,7 +1210,46 @@ def _make_test_prompt_window(app) -> NSWindow:
     cv.addSubview_(_btn("Copy",   handler, "copyResponse:",((bx,      12), (64, 22))))
     bx -= 72
     cv.addSubview_(_btn("Export", handler, "exportSession:",((bx,     12), (68, 22))))
+    bx -= 96
+
+    # Prompts pull-down button (library + generate)
+    from AppKit import NSPopUpButton as _NSPUBp, NSMenuItem as _NSMIp, NSMenu as _NSMenup
+    prompts_btn = _NSPUBp.alloc().initWithFrame_(((bx, 10), (90, 26)))
+    prompts_btn.setPullsDown_(True)
+    prompts_btn.setTarget_(handler)
+    prompts_btn.setBezelStyle_(4)   # rounded
+    # First item is the button label (shown when pull-down is closed)
+    prompts_btn.addItemWithTitle_("📚 Prompts")
+    prompts_btn.itemAtIndex_(0).setEnabled_(False)
+    # Library categories as submenus
+    for cat, prompts in _PROMPT_LIBRARY.items():
+        cat_item = _NSMIp.alloc().initWithTitle_action_keyEquivalent_(cat, None, "")
+        cat_item.setEnabled_(True)
+        sub = _NSMenup.alloc().initWithTitle_(cat)
+        for p in prompts:
+            short = p[:72] + "…" if len(p) > 72 else p
+            pi = _NSMIp.alloc().initWithTitle_action_keyEquivalent_(
+                short, "promptLibrarySelected:", "")
+            pi.setTarget_(handler)
+            pi.setRepresentedObject_(p)   # store full prompt
+            sub.addItem_(pi)
+        cat_item.setSubmenu_(sub)
+        prompts_btn.menu().addItem_(cat_item)
+    # Separator + generate option
+    prompts_btn.menu().addItem_(_NSMIp.separatorItem())
+    gen_item = _NSMIp.alloc().initWithTitle_action_keyEquivalent_(
+        "✨ Generate suggestions…", "generateSuggestions:", "")
+    gen_item.setTarget_(handler)
+    prompts_btn.menu().addItem_(gen_item)
+    cv.addSubview_(prompts_btn)
+
     handler._output_font_size = app._cfg.get("qt_font_size", 12)
+
+    # Persistent load-status poll — updates tps_lbl while a model is loading
+    load_poll = rumps.Timer(handler._loadStatusTick_, 0.5)
+    load_poll.start()
+    handler._load_poll_timer = load_poll
+
     return win, handler
 
 
@@ -2238,6 +2708,7 @@ DEFAULTS = {
     "model_params":   {},         # {model_name: {context, gpu_layers, max_tokens}}
     "hidden_models":  [],         # [model_name, ...]
     "pinned_models":  [],         # [model_name, ...] pinned to top of menu
+    "model_load_times": {},       # {model_name: [t1, t2, t3]} rolling last-3 load times (seconds)
     "known_models":   [],         # [model_name, ...] all models ever seen (for new-model detection)
     "recent_models":  [],         # [model_name, ...] max 5, most recent first
     "default_model":  "",         # model name to auto-load on startup (empty = none)
@@ -2565,6 +3036,20 @@ def omlx_start(cfg: dict) -> bool:
         if omlx_is_healthy(cfg):
             return True
     return False
+
+
+def record_model_load_time(cfg: dict, name: str, elapsed: float) -> None:
+    """Store elapsed load time for a model, keeping the last 3 samples."""
+    times = cfg.setdefault("model_load_times", {}).setdefault(name, [])
+    times.insert(0, round(elapsed, 1))
+    cfg["model_load_times"][name] = times[:3]
+    save_config(cfg)
+
+
+def get_model_load_estimate(cfg: dict, name: str) -> float | None:
+    """Return rolling average of last load times, or None if no history."""
+    times = cfg.get("model_load_times", {}).get(name, [])
+    return round(sum(times) / len(times), 0) if times else None
 
 
 def send_model_ready_notification(name: str, elapsed: float = 0.0) -> None:
@@ -3426,22 +3911,6 @@ class Switchman(rumps.App):
                 menu.append(pitem)
             menu.append(None)
 
-        # ── Recent models section ─────────────────────────────────────────────────
-        default_model = self._cfg.get("default_model")
-        recent_names = [
-            n for n in self._cfg.get("recent_models", [])
-            if n in self._model_map and (n not in hidden or n == default_model)
-        ]
-        if recent_names:
-            menu.append(_menu_header("── Recent ──"))
-            for rname in recent_names:
-                ritem = rumps.MenuItem(f"  {self._display(rname)}", callback=self._on_select)
-                ritem._model_name = rname
-                if self._active == rname and not self._loading:
-                    ritem.state = 1
-                menu.append(ritem)
-            menu.append(None)
-
         # ── Profiles section ────────────────��────────────────────────────��────
         profiles = load_profiles()
         if profiles:
@@ -3664,7 +4133,17 @@ class Switchman(rumps.App):
                     logging.error("results panel exception:\n%s", traceback.format_exc())
             return
         self._flash_state = not self._flash_state
-        label = "Benchmarking…" if self._benchmarking else self._load_status
+        if self._benchmarking:
+            label = "Benchmarking…"
+        else:
+            label = self._load_status
+            estimate = getattr(self, '_load_time_estimate', None)
+            if estimate and self._load_start_time:
+                elapsed = time.time() - self._load_start_time
+                if estimate > elapsed:
+                    label += f" ~{int(estimate - elapsed)}s"
+                else:
+                    label += " …"
         self.title = label if self._flash_state else "⚡"
 
     # ── Model callbacks ───────────────────────────────────────────────────────
@@ -3677,44 +4156,46 @@ class Switchman(rumps.App):
         self._cfg["recent_models"] = recent[:5]
         save_config(self._cfg)
 
-    def _on_select(self, sender: rumps.MenuItem):
-        self._last_toks = None
-        self._ctx_used = None
-        self._ctx_max = None
-        self._stop_tps_poll()
-        name = getattr(sender, "_model_name", None) or sender.title.strip()
+    def _load_model_by_name(self, name: str, skip_memory_check: bool = False):
+        """Programmatically load a model by name (must be called on the main thread)."""
         entry = self._model_map.get(name)
         if entry is None:
             return
         path, kind = entry
-
-        # ── Memory cost check ────────────────────────────────────────────────
-        est_gb = estimate_model_memory_gb(path)
-        total_gb = get_total_ram_gb()
-        if est_gb > 0 and total_gb > 0 and est_gb > total_gb - 6:
-            from AppKit import NSAlert
-            alert = NSAlert.alloc().init()
-            alert.setMessageText_("Model may not fit in memory")
-            alert.setInformativeText_(
-                f"{name}\nestimated {est_gb:.1f} GB — your Mac has {total_gb:.0f} GB total.\n\n"
-                "Loading may cause heavy swap or a crash. Continue?")
-            alert.addButtonWithTitle_("Load Anyway")
-            alert.addButtonWithTitle_("Cancel")
-            if alert.runModal() != 1000:   # 1000 = first button (Load Anyway)
-                return
-
+        if not skip_memory_check:
+            est_gb = estimate_model_memory_gb(path)
+            total_gb = get_total_ram_gb()
+            if est_gb > 0 and total_gb > 0 and est_gb > total_gb - 6:
+                from AppKit import NSAlert
+                alert = NSAlert.alloc().init()
+                alert.setMessageText_("Model may not fit in memory")
+                alert.setInformativeText_(
+                    f"{name}\nestimated {est_gb:.1f} GB — your Mac has {total_gb:.0f} GB total.\n\n"
+                    "Loading may cause heavy swap or a crash. Continue?")
+                alert.addButtonWithTitle_("Load Anyway")
+                alert.addButtonWithTitle_("Cancel")
+                if alert.runModal() != 1000:
+                    return
+        self._last_toks = None
+        self._ctx_used = None
+        self._ctx_max = None
+        self._stop_tps_poll()
         self._update_recent(name)
-        # Increment token — any in-progress load will see it changed and abort
         self._switch_token += 1
         token = self._switch_token
         self._active = name
         self._loading = True
         self._load_start_time = time.time()
+        self._load_time_estimate = get_model_load_estimate(self._cfg, name)
         self._update_title()
         if kind == "mlx":
             threading.Thread(target=self._switch_mlx, args=(name, token), daemon=True).start()
         else:
             threading.Thread(target=self._switch_gguf, args=(name, path, token), daemon=True).start()
+
+    def _on_select(self, sender: rumps.MenuItem):
+        name = getattr(sender, "_model_name", None) or sender.title.strip()
+        self._load_model_by_name(name)
 
     def _stop(self, _=None):
         threading.Thread(target=self._do_stop, daemon=True).start()
@@ -3795,6 +4276,7 @@ class Switchman(rumps.App):
         )
         sync_clients(self._cfg, self._cfg.get("omlx_port", 8000), model_name=name, kind="mlx")
         elapsed = time.time() - self._load_start_time if self._load_start_time else 0.0
+        record_model_load_time(self._cfg, name, elapsed)
         if self._cfg.get("notifications", True):
             send_model_ready_notification(name, elapsed)
         self._start_poll_on_rebuild = True
@@ -3856,6 +4338,7 @@ class Switchman(rumps.App):
         )
         sync_clients(self._cfg, self._cfg.get("llama_port", 8000), model_name=model_id, kind="gguf")
         elapsed = time.time() - self._load_start_time if self._load_start_time else 0.0
+        record_model_load_time(self._cfg, name, elapsed)
         if self._cfg.get("notifications", True):
             send_model_ready_notification(name, elapsed)
         self._start_poll_on_rebuild = True

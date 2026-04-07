@@ -200,3 +200,35 @@ Save the current prompt + response pair to a Markdown file via NSSavePanel. Usef
 - **Model notes in tooltip** — show model note as NSToolTip on the menu item instead of a submenu entry
 - **Keyboard shortcut to load default model** — global hotkey that immediately loads the ★ default model
 - **Export Quick Test session** — save prompt + response pair to a Markdown file
+
+---
+
+## New Enhancements (2026-04-06)
+
+### Quick Test / Output
+- **Markdown rendering** — replace NSTextView output with WKWebView + marked.js; code blocks get syntax highlighting and a per-block Copy button
+- **Conversation mode** — multi-turn chat with message history; "New Conversation" button resets; history saved to `~/.config/switchman/conversations/`
+- **System prompt field** — collapsible text area above the input; saved per-model in config
+- **Inline parameter controls** — collapsible row: Temperature slider, Max Tokens stepper, Preset dropdown (Precise / Balanced / Creative) — no need to open Settings
+- **Token counter as you type** — approximate token count (`~42 tokens`) shown below the prompt input in real time; warns when approaching context limit
+- **Response word/char count** — add word count and character count to the stats bar alongside tok/s
+- **Prompt template variables** — define `{{variable}}` placeholders in a prompt; Switchman shows a fill-in dialog before sending
+- **Draft prompt persistence** — unsent prompt text is saved between sessions so you don't lose it on restart
+
+### Menu Bar / Popover
+- **Custom popover** — replace plain NSMenu with a floating NSPanel showing active model, live tok/s, memory pressure bar, thermal state, mini spark chart, and one-click model switching (see UI2_PLAN.md)
+- **Mini tok/s spark chart** — bar chart of last 5 tok/s readings drawn in the popover with CoreGraphics
+- **Animated model switch** — in-popover progress bar sweeps during load; fades to new model name on completion
+- **Model size badge in menu** — colored dot or label next to each model showing disk size (e.g. `63 GB`)
+
+### Settings
+- **Tabbed settings panel** — replace single scroll with NSTabView: Models / Inference / Sync / Behavior / Appearance (see UI2_PLAN.md)
+- **Model cards with live search** — NSSearchField filters a card-based model list; each card shows size, avg tok/s, last load time, and action icons
+- **Per-model context usage history** — track and display the highest ctx% ever reached per model, so you know if you're regularly hitting limits
+
+### System / Infrastructure
+- **FSEvents model directory watcher** — auto-detect new models dropped into MLX or GGUF directories without needing a manual Refresh
+- **Auto-benchmark on first load** — optionally run a short benchmark automatically the first time a new model is loaded, to seed its performance history
+- **Model performance ranking** — sort the model list by avg tok/s (from benchmark history) with a toggle, so you can quickly find the fastest model for a given task
+- **Persistent Quick Test layout** — remember window size, compare mode state, font size, and selected Model 2 between sessions
+- **Ollama backend** — detect a running Ollama instance, list its models, and switch without restarting; unified with MLX/GGUF in the same menu
