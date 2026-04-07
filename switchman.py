@@ -1830,6 +1830,279 @@ def run_settings_panel(cfg: dict) -> bool:
     cfg["hf_token"] = hf_token_fld.stringValue().strip()
     return True
 
+def run_settings_panel_tabbed(cfg: dict) -> bool:
+    """Tabbed settings panel (UI 2.0). Tabs: Inference · Sync · Behavior · Appearance."""
+    from AppKit import (
+        NSTabView, NSTabViewItem, NSScrollView,
+    )
+    W = 560
+    H = 480
+    TAB_H = H - _BTN_BOT - _BTN_H - _GAP - 28  # height available inside each tab
+
+    handler = _PanelHandler.alloc().init()
+    panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
+    panel.setTitle_("Switchman — Settings")
+    panel.setMinSize_((W, 380))
+    panel.setDelegate_(handler)
+    panel.center()
+    _constrain_to_screen(panel)
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
+    cv = _vibrancy_content_view(panel)
+
+    # ── Tab view ──────────────────────────────────────────────────────────────
+    tab_view = NSTabView.alloc().initWithFrame_(
+        ((_PAD, _BTN_BOT + _BTN_H + _GAP), (W - _PAD*2, TAB_H + 28)))
+    tab_view.setAutoresizingMask_(2 | 16)  # width+height sizable
+    cv.addSubview_(tab_view)
+
+    def _make_tab(label):
+        item = NSTabViewItem.alloc().init()
+        item.setLabel_(label)
+        inner = NSScrollView.alloc().initWithFrame_(((0, 0), (W - _PAD*2 - 16, TAB_H)))
+        inner.setHasVerticalScroller_(True)
+        inner.setAutohidesScrollers_(True)
+        # Content view inside scroll
+        content = NSView.alloc().initWithFrame_(((0, 0), (W - _PAD*2 - 32, 0)))
+        item._tab_content = content
+        item._tab_scroll = inner
+        inner.setDocumentView_(content)
+        item.setView_(inner)
+        tab_view.addTabViewItem_(item)
+        return item, content
+
+    BW = 72
+    x_lbl = _PAD
+    x_fld = _PAD + _LW + _GAP
+    FWB   = W - _PAD*2 - 16 - _LW - _GAP - 6 - BW  # field with browse
+    FW    = W - _PAD*2 - 16 - _LW - _GAP            # field no browse
+    x_btn = x_fld + FWB + 6
+
+    fields: dict[str, NSTextField] = {}
+
+    # ── Tab 1: Inference ──────────────────────────────────────────────────────
+    tab_inf, inf_cv = _make_tab("Inference")
+    cur = _PAD
+
+    def fy_tab(cv_h, from_top, h=_RH):
+        return cv_h - from_top - h
+
+    # Paths section
+    INF_H = (_SH + _SG
+             + 4 * (_RH + _RG)   # Paths: 4 rows
+             + _DG + _SH + _SG
+             + 3 * (_RH + _RG)   # oMLX: 3 rows
+             + _PAD)
+    inf_cv.setFrameSize_((W - _PAD*2 - 32, INF_H))
+
+    def fy_i(from_top, h=_RH):
+        return INF_H - from_top - h
+
+    inf_cv.addSubview_(_lbl("Paths", ((_PAD, fy_i(cur, _SH)), (W - _PAD*2 - 32 - _PAD, _SH)),
+                            bold=True, right=False))
+    cur += _SH + _SG
+    for key, label, is_dir in [
+        ("mlx_dir",         "MLX models dir",     True),
+        ("gguf_dir",        "GGUF models dir",     True),
+        ("llama_server",    "llama-server binary", False),
+        ("opencode_config", "opencode config",     False),
+    ]:
+        inf_cv.addSubview_(_lbl(label + ":", ((x_lbl, fy_i(cur)), (_LW, _RH))))
+        f = _fld(cfg[key], ((x_fld, fy_i(cur)), (FWB, _RH)))
+        inf_cv.addSubview_(f)
+        inf_cv.addSubview_(_browse_btn(handler, f, is_dir,
+                                       ((x_btn, fy_i(cur) - 3), (BW, _RH + 6))))
+        fields[key] = f
+        cur += _RH + _RG
+
+    cur += _DG
+    inf_cv.addSubview_(_lbl("oMLX Server", ((_PAD, fy_i(cur, _SH)), (W - _PAD*2 - 32 - _PAD, _SH)),
+                            bold=True, right=False))
+    cur += _SH + _SG
+    for key, label, placeholder in [
+        ("omlx_port",    "Port",    "8000"),
+        ("omlx_api_key", "API Key", "sk-…"),
+        ("omlx_service", "Service", "com.jim.omlx"),
+    ]:
+        inf_cv.addSubview_(_lbl(label + ":", ((x_lbl, fy_i(cur)), (_LW, _RH))))
+        val = str(cfg.get(key, "")) if key == "omlx_port" else cfg.get(key, "")
+        f = _fld(val, ((x_fld, fy_i(cur)), (FW, _RH)))
+        f.setPlaceholderString_(placeholder)
+        inf_cv.addSubview_(f)
+        fields[key] = f
+        cur += _RH + _RG
+
+    # ── Tab 2: Sync ───────────────────────────────────────────────────────────
+    tab_sync, sync_cv = _make_tab("Sync")
+    SYNC_H = (_PAD + _SH + _SG + 6 * (_RH + _RG)
+              + _DG + 2 * (_RH + _RG) + _PAD)
+    sync_cv.setFrameSize_((W - _PAD*2 - 32, SYNC_H))
+
+    def fy_s(from_top, h=_RH):
+        return SYNC_H - from_top - h
+
+    cur_s = _PAD
+    sync_cv.addSubview_(_lbl("Client Sync", ((_PAD, fy_s(cur_s, _SH)), (W - _PAD*2 - 32 - _PAD, _SH)),
+                             bold=True, right=False))
+    cur_s += _SH + _SG
+    sync_chks = {}
+    for key, title in [
+        ("notifications",        "macOS notification when model ready"),
+        ("auto_reload_on_crash", "Auto-reload model after server crash"),
+        ("sync_env",             "Write env file (LLM_BASE_URL) on switch"),
+        ("sync_aider",           "Sync ~/.aider.conf.yml on switch"),
+        ("sync_zed",             "Sync ~/.config/zed/settings.json on switch"),
+        ("sync_continue",        "Sync ~/.continue/config.json on switch"),
+    ]:
+        c = NSButton.alloc().initWithFrame_(((x_fld, fy_s(cur_s)), (FW, _RH)))
+        c.setButtonType_(3); c.setTitle_(title)
+        c.setState_(1 if cfg.get(key, DEFAULTS.get(key, False)) else 0)
+        sync_cv.addSubview_(c)
+        sync_chks[key] = c
+        cur_s += _RH + _RG
+
+    cur_s += _DG
+    sync_cv.addSubview_(_lbl("On switch script:", ((x_lbl, fy_s(cur_s)), (_LW, _RH))))
+    script_fld = _fld(cfg.get("on_switch_script", ""), ((x_fld, fy_s(cur_s)), (FW, _RH)))
+    script_fld.setPlaceholderString_("/path/to/script.sh  (env: SWITCHMAN_MODEL, _PORT, _KIND)")
+    sync_cv.addSubview_(script_fld)
+    cur_s += _RH + _RG
+
+    sync_cv.addSubview_(_lbl("HF token:", ((x_lbl, fy_s(cur_s)), (_LW, _RH))))
+    hf_token_fld = _fld(cfg.get("hf_token", ""), ((x_fld, fy_s(cur_s)), (FW, _RH)))
+    hf_token_fld.setPlaceholderString_("hf_… (for gated models)")
+    sync_cv.addSubview_(hf_token_fld)
+
+    # ── Tab 3: Behavior ───────────────────────────────────────────────────────
+    tab_beh, beh_cv = _make_tab("Behavior")
+    BEH_H = (_PAD + _SH + _SG + 4 * (_RH + _RG) + _PAD)
+    beh_cv.setFrameSize_((W - _PAD*2 - 32, BEH_H))
+
+    def fy_b(from_top, h=_RH):
+        return BEH_H - from_top - h
+
+    cur_b = _PAD
+    beh_cv.addSubview_(_lbl("Startup & UI", ((_PAD, fy_b(cur_b, _SH)), (W - _PAD*2 - 32 - _PAD, _SH)),
+                            bold=True, right=False))
+    cur_b += _SH + _SG
+
+    beh_cv.addSubview_(_lbl("Restart opencode:", ((x_lbl, fy_b(cur_b)), (_LW, _RH))))
+    chk_roc = NSButton.alloc().initWithFrame_(((x_fld, fy_b(cur_b)), (FW, _RH)))
+    chk_roc.setButtonType_(3)
+    chk_roc.setTitle_("Restart opencode on model switch")
+    chk_roc.setState_(1 if cfg.get("restart_opencode", False) else 0)
+    beh_cv.addSubview_(chk_roc)
+    cur_b += _RH + _RG
+
+    beh_cv.addSubview_(_lbl("Terminal app:", ((x_lbl, fy_b(cur_b)), (_LW, _RH))))
+    term_popup = NSPopUpButton.alloc().initWithFrame_(
+        ((x_fld, fy_b(cur_b) - 2), (140, _RH + 4)))
+    for opt in ["Terminal", "iTerm2"]:
+        term_popup.addItemWithTitle_(opt)
+    term_popup.selectItemWithTitle_(cfg.get("terminal_app", "Terminal"))
+    beh_cv.addSubview_(term_popup)
+
+    # ── Tab 4: Models ────────────────────────────────────────────────────────
+    tab_mod, mod_cv = _make_tab("Models")
+    # Inner scroll height is variable; start with a reasonable estimate
+    # The actual model list is built dynamically from cfg
+    from AppKit import NSSearchField, NSColor, NSView
+    MOD_INNER_H = max(400, 28 * (len(cfg.get("known_models", [])) or 10) + 60)
+    mod_cv.setFrameSize_((W - _PAD*2 - 32, MOD_INNER_H))
+
+    # Search field at top
+    search_fld = NSSearchField.alloc().initWithFrame_(
+        ((_PAD, MOD_INNER_H - _PAD - 24), (W - _PAD*2 - 32 - _PAD, 24)))
+    search_fld.setPlaceholderString_("Filter models…")
+    mod_cv.addSubview_(search_fld)
+
+    # Model card rows: name | kind badge | size | tags | actions
+    my = MOD_INNER_H - _PAD - 24 - _GAP
+    known = sorted(cfg.get("known_models", []))
+    hidden_set = set(cfg.get("hidden_models", []))
+    tags_map = cfg.get("model_tags", {})
+    aliases = cfg.get("aliases", {})
+    card_h = 36
+    for name in known:
+        my -= card_h + 2
+        kind_str = "GGUF" if any(name.endswith(s) for s in (".gguf", "-GGUF")) else "MLX"
+        color = NSColor.systemBlueColor() if kind_str == "MLX" else NSColor.systemOrangeColor()
+        alias = aliases.get(name, "")
+        display = alias if alias else name
+        tags = ", ".join(tags_map.get(name, []))
+        hidden = name in hidden_set
+
+        row = NSView.alloc().initWithFrame_(((_PAD, my), (W - _PAD*2 - 32 - _PAD, card_h)))
+        row.setWantsLayer_(True)
+        row.layer().setCornerRadius_(6)
+        row.layer().setBackgroundColor_(NSColor.quaternaryLabelColor().CGColor())
+
+        # Kind badge
+        badge = NSTextField.alloc().initWithFrame_(((4, 8), (36, 18)))
+        badge.setStringValue_(kind_str)
+        badge.setBezeled_(False); badge.setDrawsBackground_(False)
+        badge.setEditable_(False); badge.setSelectable_(False)
+        badge.setFont_(NSFont.boldSystemFontOfSize_(9))
+        badge.setTextColor_(color)
+        row.addSubview_(badge)
+
+        # Model name
+        name_lbl = NSTextField.alloc().initWithFrame_(((42, 12), (W - _PAD*2 - 32 - _PAD - 100 - 42, 18)))
+        name_lbl.setStringValue_(display[:55])
+        name_lbl.setBezeled_(False); name_lbl.setDrawsBackground_(False)
+        name_lbl.setEditable_(False); name_lbl.setSelectable_(False)
+        name_lbl.setFont_(NSFont.systemFontOfSize_(12))
+        name_lbl.setTextColor_(NSColor.labelColor())
+        row.addSubview_(name_lbl)
+
+        # Tags / hidden badge
+        sub_text = (f"🏷 {tags}" if tags else "") + (" · 👁 hidden" if hidden else "")
+        if sub_text:
+            sub_lbl = NSTextField.alloc().initWithFrame_(((42, 2), (W - _PAD*2 - 32 - _PAD - 80 - 42, 10)))
+            sub_lbl.setStringValue_(sub_text[:70])
+            sub_lbl.setBezeled_(False); sub_lbl.setDrawsBackground_(False)
+            sub_lbl.setEditable_(False); sub_lbl.setSelectable_(False)
+            sub_lbl.setFont_(NSFont.systemFontOfSize_(9))
+            sub_lbl.setTextColor_(NSColor.secondaryLabelColor())
+            row.addSubview_(sub_lbl)
+
+        mod_cv.addSubview_(row)
+
+    # ── Tab 5: Appearance ─────────────────────────────────────────────────────
+    _make_tab("Appearance")   # placeholder — future font/theme controls
+
+    # ── Buttons (outside tab view) ────────────────────────────────────────────
+    cv.addSubview_(_btn("Cancel", handler, "stopCancel:",
+                        ((W - _PAD - 152, _BTN_BOT), (72, _BTN_H)), "\x1b"))
+    cv.addSubview_(_primary_btn("Save", handler, "stopOK:",
+                        ((W - _PAD - 74, _BTN_BOT), (66, _BTN_H)), "\r"))
+
+    NSApp.activateIgnoringOtherApps_(True)
+    panel.makeKeyAndOrderFront_(None)
+    result = NSApp.runModalForWindow_(panel)
+    panel.orderOut_(None)
+
+    if result != NSModalResponseOK:
+        return False
+
+    # Read back into cfg
+    for key in ("mlx_dir", "gguf_dir", "llama_server", "opencode_config",
+                "omlx_api_key", "omlx_service"):
+        cfg[key] = fields[key].stringValue()
+    try:
+        cfg["omlx_port"] = int(fields["omlx_port"].stringValue())
+    except ValueError:
+        pass
+    cfg["restart_opencode"] = bool(chk_roc.state())
+    cfg["terminal_app"] = term_popup.titleOfSelectedItem()
+    for key, c in sync_chks.items():
+        cfg[key] = bool(c.state())
+    cfg["on_switch_script"] = script_fld.stringValue().strip()
+    cfg["hf_token"] = hf_token_fld.stringValue().strip()
+    return True
+
+
 def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
     """Show per-model settings panel. Modifies cfg in-place. Returns True if saved."""
     W       = 440
@@ -4555,7 +4828,16 @@ class Switchman(rumps.App):
         cv.addSubview_(spark_view); self._pop_spark_view = spark_view
         self._pop_tps_history = []  # filled by _pop_refresh
 
-        y -= 12
+        y -= 10
+        # Loading progress bar (indeterminate, shown while _loading)
+        load_bar = NSProgressIndicator.alloc().initWithFrame_(
+            ((_PAD, y), (PW - _PAD*2, 8)))
+        load_bar.setStyle_(0)  # bar
+        load_bar.setIndeterminate_(True)
+        load_bar.setHidden_(True)
+        cv.addSubview_(load_bar); self._pop_load_bar = load_bar
+        y -= 10
+
         sep2 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
         sep2.setBoxType_(2); cv.addSubview_(sep2)
 
@@ -4674,6 +4956,16 @@ class Switchman(rumps.App):
         except Exception:
             mem_pct = 0
 
+        # Loading progress bar
+        load_bar = getattr(self, '_pop_load_bar', None)
+        if load_bar:
+            if self._loading:
+                load_bar.setHidden_(False)
+                load_bar.startAnimation_(None)
+            else:
+                load_bar.stopAnimation_(None)
+                load_bar.setHidden_(True)
+
         if self._loading and self._active:
             self._pop_model_lbl.setStringValue_(f"⏳ Loading {self._display(self._active)}…")
             status = getattr(self, '_load_status', 'Loading…')
@@ -4742,11 +5034,17 @@ class Switchman(rumps.App):
                 rb.setHidden_(True)
 
     def _pop_tick_(self, timer):
-        """Refresh popover every 2s if visible."""
+        """Refresh popover every 2s (every 0.5s while loading)."""
         if not hasattr(self, '_popover_panel') or not self._popover_panel.isVisible():
             timer.stop()
             self._pop_timer = None
             return
+        # Speed up refresh during model load
+        target_interval = 0.5 if self._loading else 2.0
+        if abs(timer.timeInterval - target_interval) > 0.1:
+            timer.stop()
+            self._pop_timer = rumps.Timer(self._pop_tick_, target_interval)
+            self._pop_timer.start()
         self._pop_refresh()
 
     def popQuickTest_(self, _):
@@ -5509,7 +5807,7 @@ class Switchman(rumps.App):
     # ── Settings panel callbacks ──────────────────────────────────────────────
 
     def _open_settings(self, _):
-        if run_settings_panel(self._cfg):
+        if run_settings_panel_tabbed(self._cfg):
             save_config(self._cfg)
             self._build_menu()
 
