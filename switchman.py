@@ -797,7 +797,7 @@ def run_settings_panel(cfg: dict) -> bool:
          + _SH + _SG + 4 * (_RH + _RG)            # Paths (4 rows)
          + _DG + _SH + _SG + 3 * (_RH + _RG)      # oMLX (3 rows)
          + _DG + _SH + _SG + 2 * (_RH + _RG) - _RG  # Behavior (2 rows)
-         + _DG + _SH + _SG + 7 * (_RH + _RG)        # Sync (5 checkboxes + script + HF token)
+         + _DG + _SH + _SG + 8 * (_RH + _RG)        # Sync (6 checkboxes + script + HF token)
          + _DG + _BTN_H + _BTN_BOT)
 
     def fy(from_top: int, h: int = _RH) -> int:
@@ -3759,7 +3759,7 @@ class Switchman(rumps.App):
         sampling = mlx_sampling_params(p)
 
         self._load_status = "Loading weights…"
-        deadline = time.time() + 300
+        deadline = time.time() + 600
         while time.time() < deadline:
             if self._superseded(token): return
             resp = http_post(url, body={
@@ -3767,7 +3767,7 @@ class Switchman(rumps.App):
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 1,
                 **sampling,
-            }, headers=headers, timeout=300)
+            }, headers=headers, timeout=600)
             if resp and resp.get("model") == name:
                 break
             time.sleep(2)
@@ -3777,7 +3777,7 @@ class Switchman(rumps.App):
         http_post(url, body={
             "model": name,
             "messages": [{"role": "user", "content": "Write a short Python hello world function."}],
-            "max_tokens": 128,
+            "max_tokens": 512,
             **sampling,
         }, headers=headers, timeout=300)
 
