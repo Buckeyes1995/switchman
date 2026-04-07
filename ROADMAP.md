@@ -20,25 +20,23 @@ Applied to all 12 panels and windows.
 ~~Use `NSColor.controlAccentColor()` on primary action buttons~~
 Save / Run Benchmark buttons now use the system accent color.
 
-### NSVisualEffectView Vibrancy Backgrounds
-Replace the plain gray window backgrounds on all panels (Settings, per-model Settings, Benchmark, Quick Test) with `NSVisualEffectView` using `.sidebar` or `.hudWindow` material. Gives the frosted-glass translucency that native Mac apps use. One `NSVisualEffectView` as the root content view of each panel; existing subviews stay the same.
+### ~~NSVisualEffectView Vibrancy Backgrounds~~ ✓ Done
+Applied to all 12 panels. Windows also set opaque=False + clearColor to let the effect through.
 
-### NSBox Section Dividers
-Replace the bold plain-text section headers in panels (Paths, oMLX, Behavior, Sampling, etc.) with `NSBox` title separators (`boxType = NSBoxSeparator` + a label above). Cleaner visual grouping with less visual noise.
+### ~~NSBox Section Dividers~~ ✓ Done
+Bold section headers now include a thin NSBox separator line underneath.
 
-### SF Symbols for Menu Icons
-Replace Unicode emoji (⚙, ⬇, ⏱, ▶, ⊘) with proper SF Symbol images via `NSImage.imageWithSystemSymbolName_accessibilityDescription_()`. SF Symbols render crisply at any size, automatically adapt to dark/light mode, and look consistent with the rest of macOS.
+### ~~SF Symbols for Menu Icons~~ ✓ Done
+All menu action items use SF Symbol images (gearshape, timer, play.fill, trash, etc.).
 
-### Colored Status Dot for Active Model
-In the model submenu, show a filled green circle (`NSImage` or a Unicode `●` with `NSColor.systemGreenColor`) next to the active model's name instead of the plain checkmark state. Makes the active model immediately obvious when scanning the menu.
+### ~~Colored Status Dot for Active Model~~ ✓ Done
+Active model shows a green ● prefix instead of a plain checkmark.
 
-### Dark Mode Support in HTML Panels
-The benchmark history and results panels use hardcoded light-mode colors (`#f5f5f5`, `#1a1a1a`, `#3a5a8a`). Add `@media (prefers-color-scheme: dark)` blocks to all inline CSS so these panels look correct in dark mode. Pass the effective appearance from `NSApp.effectiveAppearance` to inject a `data-theme` attribute on `<html>` as a fallback.
+### ~~Dark Mode Support in HTML Panels~~ ✓ Done
+Both benchmark HTML panels have `@media (prefers-color-scheme: dark)` blocks.
 
-### Quick Test Window Visual Refresh
-- Distinct background tint on the response output area (subtle `NSBox` or `NSVisualEffectView` inset) to visually separate it from the input
-- Thin `NSBox` separator between the input row and the output area
-- Token stats label (`TTFT · tok/s · ctx`) styled with a secondary text color (`NSColor.secondaryLabelColor`) rather than the same color as body text
+### ~~Quick Test Window Visual Refresh~~ ✓ Done
+Separator line between input and output; stats label uses secondaryLabelColor.
 
 ---
 
@@ -57,11 +55,11 @@ Held until there's appetite for the refactor — the extraction itself is low ri
 
 ## Planned Features
 
-### Token / Memory Cost Estimator
-Before loading a model, estimate how much unified memory it will consume based on parameter count, quantization, and context length. Show a warning if it may not fit alongside the OS and other apps.
+### ~~Token / Memory Cost Estimator~~ ✓ Done
+Warns before loading if estimated model size (disk × 1.15) exceeds total RAM − 6 GB headroom.
 
-### Prompt History in Quick Test
-Up/down arrow keys in the Quick Test window cycle through previous prompts, like a shell history. Stored in `~/.config/switchman/prompt_history.json`.
+### ~~Prompt History in Quick Test~~ ✓ Done
+Up/down arrow keys cycle previous prompts. Stored in `~/.config/switchman/prompt_history.json`.
 
 ### ~~Export / Import Settings~~ ✓ Done
 ~~One-click export of the full config to a single JSON file.~~
@@ -82,11 +80,11 @@ Support `HF_TOKEN` for downloading gated models (Llama, Gemma, etc.) and higher 
 ### Model Comparison History
 Save side-by-side compare results from Quick Test to a history file. Browse and export past comparisons.
 
-### IDE / Client Sync — Aider
-On model switch, update `~/.aider.conf.yml` with the new `openai-api-base` (port) and model name. Aider is widely used in the local LLM community and reads this file on startup.
+### ~~IDE / Client Sync — Aider~~ ✓ Done
+Writes `~/.aider.conf.yml` (port + model name) on every switch. Toggle in Settings → Sync.
 
-### IDE / Client Sync — Zed
-On model switch, update `~/.config/zed/settings.json` under `assistant` → `default_model` with the new provider URL and model name. Zed's assistant supports custom OpenAI-compatible providers.
+### ~~IDE / Client Sync — Zed~~ ✓ Done
+Writes `~/.config/zed/settings.json` assistant section on every switch. Toggle in Settings → Sync.
 
 ### IDE / Client Sync — Fix Continue.dev
 Previous sync only updated `apiBase` (the port) but not the model name. Code was removed pending a proper implementation. Starting point:
@@ -148,8 +146,8 @@ Connect to a remote Switchman instance (e.g., Mac Studio from a MacBook). Browse
 ### Benchmark Comparison View
 Select two or more past benchmark runs and diff them side by side — useful for comparing quantization levels or context lengths on the same model.
 
-### Plugin / Script Hooks
-Run a user-defined shell script on model switch events. Enables custom integrations (Home Assistant, Raycast, webhooks, etc.).
+### ~~Plugin / Script Hooks~~ ✓ Done
+"On switch script" field in Settings runs any shell command after every switch. Env vars: `SWITCHMAN_MODEL`, `SWITCHMAN_PORT`, `SWITCHMAN_KIND`.
 
 ---
 
