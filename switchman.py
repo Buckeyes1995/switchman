@@ -350,6 +350,7 @@ class _PanelHandler(NSObject):
 
 
 _PROMPT_HISTORY_PATH = Path.home() / ".config" / "switchman" / "prompt_history.json"
+_COMPARE_HISTORY_PATH = Path.home() / ".config" / "switchman" / "compare_history.json"
 _PROMPT_HISTORY_MAX  = 200
 
 
@@ -701,6 +702,11 @@ class _TestPromptHandler(NSObject):
         buf2_empty = not getattr(self, '_buf2', [])
         if not self._streaming and not self._buf and not streaming2 and buf2_empty:
             timer.stop()
+            # Save compare result if a sequential compare just finished
+            phase = getattr(self, '_sequential_phase', None)
+            if phase == "streaming2" and getattr(self, '_model2_name', None):
+                self._sequential_phase = None
+                self._save_compare_result()
 
     def clear_(self, _s):
         self._output_tv.setString_("")
@@ -829,6 +835,38 @@ class _TestPromptHandler(NSObject):
             self._tps_lbl2.setHidden_(not on)
         if hasattr(self, '_vdiv'):
             self._vdiv.setHidden_(not on)
+
+    def _save_compare_result(self):
+        import datetime
+        prompt = getattr(self, '_prompt_for_compare', "")
+        model1 = (self._app_ref._active if self._app_ref else None) or "Model 1"
+        model2 = getattr(self, '_model2_name', "Model 2")
+        response1 = self._output_tv.string() or ""
+        response2 = self._output_tv2.string() if hasattr(self, '_output_tv2') else ""
+        elapsed1 = (getattr(self, '_t_end', None) or self._t0) - self._t0
+        elapsed2 = (getattr(self, '_t_end2', None) or getattr(self, '_t02', self._t0)) - getattr(self, '_t02', self._t0)
+        tok1 = self._tok_count
+        tok2 = getattr(self, '_tok_count2', 0)
+        entry = {
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+            "prompt": prompt,
+            "model1": model1,
+            "model2": model2,
+            "response1": response1,
+            "response2": response2,
+            "tps1": round(tok1 / elapsed1, 1) if elapsed1 > 0 and tok1 > 0 else 0,
+            "tps2": round(tok2 / elapsed2, 1) if elapsed2 > 0 and tok2 > 0 else 0,
+            "tokens1": tok1,
+            "tokens2": tok2,
+        }
+        try:
+            _COMPARE_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            history = json.loads(_COMPARE_HISTORY_PATH.read_text()) \
+                if _COMPARE_HISTORY_PATH.exists() else []
+            history.insert(0, entry)
+            _COMPARE_HISTORY_PATH.write_text(json.dumps(history[:50], indent=2) + "\n")
+        except Exception:
+            pass
 
     def promptLibrarySelected_(self, sender):
         """Fill input from a library prompt menu item."""
@@ -1275,9 +1313,9 @@ def run_settings_panel(cfg: dict) -> bool:
 
     handler = _PanelHandler.alloc().init()
     panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
-    # style mask 3 = NSWindowStyleMaskTitled (1) | NSWindowStyleMaskClosable (2)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     panel.setTitle_("Switchman — Settings")
+    panel.setMinSize_((W, 400))
     panel.setDelegate_(handler)
     panel.center()
     _constrain_to_screen(panel)
@@ -1416,7 +1454,7 @@ def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
     n_limit = 3 if is_gguf else 2   # context + max_tokens [+ gpu_layers]
 
     H = (_PAD
-         + _SH + _SG + 2 * (_RH + _RG)                    # Identity (alias + note)
+         + _SH + _SG + 3 * (_RH + _RG)                    # Identity (alias + note + tags)
          + _DG + _SH + _SG + n_limit * (_RH + _RG)        # Limits
          + _DG + _SH + _SG + 8 * (_RH + _RG) - _RG        # Sampling (preset + 6 + checkbox)
          + _DG + _BTN_H + _BTN_BOT)
@@ -1426,8 +1464,9 @@ def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
 
     handler = _PanelHandler.alloc().init()
     panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     panel.setTitle_(f"Settings — {name}")
+    panel.setMinSize_((W, 300))
     panel.setDelegate_(handler)
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
@@ -1449,6 +1488,12 @@ def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
     note_fld = _fld(cfg["model_notes"].get(name, ""), ((x_fld, fy(cur)), (FW, _RH)))
     note_fld.setPlaceholderString_("e.g. ctv=f16 only, good for coding")
     cv.addSubview_(note_fld)
+    cur += _RH + _RG
+    existing_tags = ", ".join(cfg.get("model_tags", {}).get(name, []))
+    cv.addSubview_(_lbl("Tags:", ((x_lbl, fy(cur)), (_LW, _RH))))
+    tags_fld = _fld(existing_tags, ((x_fld, fy(cur)), (FW, _RH)))
+    tags_fld.setPlaceholderString_("coding, fast, vision  (comma-separated)")
+    cv.addSubview_(tags_fld)
     cur += _RH + _RG + _DG
 
     # ── Limits ──
@@ -1546,6 +1591,14 @@ def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
     else:
         cfg["model_notes"].pop(name, None)
 
+    # Read tags
+    tags_raw = tags_fld.stringValue().strip()
+    tags = [t.strip().lower() for t in tags_raw.split(",") if t.strip()]
+    if tags:
+        cfg.setdefault("model_tags", {})[name] = tags
+    else:
+        cfg.get("model_tags", {}).pop(name, None)
+
     # Read limits
     mp = cfg["model_params"].setdefault(name, {})
     for key in ("context", "max_tokens"):
@@ -1615,8 +1668,9 @@ def run_edit_prompts_panel() -> None:
     handler._text_views  = []
 
     panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     panel.setTitle_("Edit Benchmark Prompts")
+    panel.setMinSize_((W, 300))
     panel.setDelegate_(handler)
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
@@ -1745,9 +1799,10 @@ def run_benchmark_config_panel(name: str, kind: str, cfg: dict) -> BenchmarkConf
 
     handler = _PanelHandler.alloc().init()
     panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     mode_label = "llama-bench" if is_gguf else "API"
     panel.setTitle_(f"Benchmark — {name}  ({mode_label})")
+    panel.setMinSize_((W, 300))
     panel.setDelegate_(handler)
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
@@ -2397,8 +2452,9 @@ def run_benchmark_results_panel(name: str, results: list[BenchmarkResult],
     W, H = 620, 480
     handler = _PanelHandler.alloc().init()
     panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     panel.setTitle_(f"Benchmark Results — {name}")
+    panel.setMinSize_((W, 400))
     panel.setDelegate_(handler)
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
@@ -2534,14 +2590,286 @@ new Chart(document.getElementById('c'),{{
 </body></html>"""
 
 
+def run_schedule_panel(cfg: dict, model_map: dict) -> None:
+    """Edit the model switching schedule (HH:MM → model name pairs)."""
+    W, H = 480, 380
+    handler = _PanelHandler.alloc().init()
+    panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
+    panel.setTitle_("Scheduled Model Switching")
+    panel.setMinSize_((W, 280))
+    panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
+    panel.setDelegate_(handler)
+    cv = _vibrancy_content_view(panel)
+
+    # Enable toggle
+    chk = NSButton.alloc().initWithFrame_(((_PAD, H - _PAD - 28), (W - _PAD * 2, 24)))
+    chk.setButtonType_(3)
+    chk.setTitle_("Enable scheduled model switching")
+    chk.setState_(1 if cfg.get("schedule_enabled") else 0)
+    cv.addSubview_(chk)
+
+    cv.addSubview_(_lbl("Define time → model rules below. The closest past entry wins each minute.",
+                        ((_PAD, H - _PAD - 52), (W - _PAD * 2, 18)), right=False))
+
+    # Table: time | model
+    from AppKit import NSTableView, NSScrollView as _SVS, NSTableColumn
+    tbl_h = H - _PAD - 52 - _GAP - 60 - _GAP - 34
+    tbl_scroll = _SVS.alloc().initWithFrame_(((_PAD, 60 + _GAP), (W - _PAD * 2, tbl_h)))
+    tbl_scroll.setHasVerticalScroller_(True); tbl_scroll.setAutohidesScrollers_(True)
+    tbl = NSTableView.alloc().initWithFrame_(((0, 0), (W - _PAD * 2, tbl_h)))
+    for ident, title, width in [("time", "Time (HH:MM)", 110), ("model", "Model", W - _PAD*2 - 120)]:
+        c = NSTableColumn.alloc().initWithIdentifier_(ident)
+        c.setWidth_(width)
+        c.headerCell().setStringValue_(title)
+        c.setEditable_(True)
+        tbl.addTableColumn_(c)
+    tbl.setUsesAlternatingRowBackgroundColors_(True)
+    tbl.setRowHeight_(22)
+    tbl_scroll.setDocumentView_(tbl)
+    cv.addSubview_(tbl_scroll)
+
+    # + / − buttons
+    add_btn = _btn("+", handler, "addRow:", ((_PAD, 60), (32, 24)))
+    rem_btn = _btn("−", handler, "removeRow:", ((_PAD + 36, 60), (32, 24)))
+    cv.addSubview_(add_btn); cv.addSubview_(rem_btn)
+
+    # Save / Cancel
+    cv.addSubview_(_btn("Save",   handler, "doOK:",    ((W - _PAD - 72, 14), (72, 26)), "\r"))
+    cv.addSubview_(_btn("Cancel", handler, "doCancel:",(( W - _PAD - 148, 14), (68, 26))))
+
+    schedule = [dict(e) for e in cfg.get("model_schedule", [])]
+
+    class _SchedDS(NSObject):
+        def numberOfRowsInTableView_(self, tv): return len(schedule)
+        def tableView_objectValueForTableColumn_row_(self, tv, col, row):
+            ident = col.identifier()
+            return schedule[row].get(ident, "")
+        def tableView_setObjectValue_forTableColumn_row_(self, tv, val, col, row):
+            schedule[row][col.identifier()] = val or ""
+
+    ds = _SchedDS.alloc().init()
+    tbl.setDataSource_(ds)
+    tbl.setDelegate_(ds)
+    tbl.reloadData()
+
+    class _SchedActions(NSObject):
+        def addRow_(self, _s):
+            all_models = sorted(model_map.keys())
+            schedule.append({"time": "09:00", "model": all_models[0] if all_models else ""})
+            tbl.reloadData()
+        def removeRow_(self, _s):
+            row = tbl.selectedRow()
+            if 0 <= row < len(schedule):
+                schedule.pop(row)
+                tbl.reloadData()
+        def doOK_(self, _s):
+            NSApp.stopModalWithCode_(NSModalResponseOK)
+        def doCancel_(self, _s):
+            NSApp.stopModalWithCode_(NSModalResponseOK + 1)
+
+    sa = _SchedActions.alloc().init()
+    add_btn.setTarget_(sa); rem_btn.setTarget_(sa)
+    handler._ds_ref = ds; handler._sa_ref = sa
+
+    NSApp.activateIgnoringOtherApps_(True)
+    panel.makeKeyAndOrderFront_(None)
+    result = NSApp.runModalForWindow_(panel)
+    panel.orderOut_(None)
+    if result == NSModalResponseOK:
+        cfg["schedule_enabled"] = bool(chk.state())
+        cfg["model_schedule"] = [e for e in schedule if e.get("time") and e.get("model")]
+        save_config(cfg)
+
+
+def run_compare_history_panel() -> None:
+    """Show compare history as a browsable panel with side-by-side responses."""
+    try:
+        history = json.loads(_COMPARE_HISTORY_PATH.read_text()) \
+            if _COMPARE_HISTORY_PATH.exists() else []
+    except Exception:
+        history = []
+
+    W, H = 880, 600
+    handler = _PanelHandler.alloc().init()
+    panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
+    panel.setTitle_("Compare History")
+    panel.setMinSize_((600, 400))
+    panel.center()
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
+    panel.setDelegate_(handler)
+    cv = _vibrancy_content_view(panel)
+
+    if not history:
+        lbl = _lbl("No compare history yet. Run a side-by-side compare in Quick Test first.",
+                   ((_PAD, H // 2 - 10), (W - _PAD * 2, 20)))
+        cv.addSubview_(lbl)
+        NSApp.activateIgnoringOtherApps_(True)
+        panel.makeKeyAndOrderFront_(None)
+        NSApp.runModalForWindow_(panel)
+        return
+
+    # Left: scrollable list of runs
+    LIST_W = 220
+    from AppKit import NSTableView, NSScrollView as _SV2, NSTableColumn, NSIndexSet
+
+    list_scroll = _SV2.alloc().initWithFrame_(((_PAD, 44), (LIST_W, H - _PAD - 44)))
+    list_scroll.setHasVerticalScroller_(True); list_scroll.setAutohidesScrollers_(True)
+    tbl = NSTableView.alloc().initWithFrame_(((0, 0), (LIST_W, H)))
+    col = NSTableColumn.alloc().initWithIdentifier_("run")
+    col.setWidth_(LIST_W - 4)
+    col.headerCell().setStringValue_("Run")
+    tbl.addTableColumn_(col)
+    tbl.setUsesAlternatingRowBackgroundColors_(True)
+    tbl.setRowHeight_(42)
+    list_scroll.setDocumentView_(tbl)
+    cv.addSubview_(list_scroll)
+
+    # Right: two NSTextViews showing responses
+    RX = _PAD + LIST_W + _GAP
+    RW = W - RX - _PAD
+    half_rw = (RW - _GAP) // 2
+
+    # Prompt label
+    prompt_lbl = NSTextField.alloc().initWithFrame_(((RX, H - _PAD - 18), (RW, 18)))
+    prompt_lbl.setBezeled_(False); prompt_lbl.setDrawsBackground_(False)
+    prompt_lbl.setEditable_(False)
+    prompt_lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
+    cv.addSubview_(prompt_lbl)
+
+    # Model name labels
+    m1_lbl = NSTextField.alloc().initWithFrame_(((RX, H - _PAD - 38), (half_rw, 18)))
+    m1_lbl.setBezeled_(False); m1_lbl.setDrawsBackground_(False); m1_lbl.setEditable_(False)
+    m1_lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
+    cv.addSubview_(m1_lbl)
+
+    m2_lbl = NSTextField.alloc().initWithFrame_(((RX + half_rw + _GAP, H - _PAD - 38), (half_rw, 18)))
+    m2_lbl.setBezeled_(False); m2_lbl.setDrawsBackground_(False); m2_lbl.setEditable_(False)
+    m2_lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
+    cv.addSubview_(m2_lbl)
+
+    # Stats labels
+    stats1_lbl = NSTextField.alloc().initWithFrame_(((RX, 10), (half_rw, 18)))
+    stats1_lbl.setBezeled_(False); stats1_lbl.setDrawsBackground_(False); stats1_lbl.setEditable_(False)
+    stats1_lbl.setFont_(NSFont.systemFontOfSize_(11))
+    from AppKit import NSColor as _NSCh
+    stats1_lbl.setTextColor_(_NSCh.secondaryLabelColor())
+    cv.addSubview_(stats1_lbl)
+
+    stats2_lbl = NSTextField.alloc().initWithFrame_(((RX + half_rw + _GAP, 10), (half_rw, 18)))
+    stats2_lbl.setBezeled_(False); stats2_lbl.setDrawsBackground_(False); stats2_lbl.setEditable_(False)
+    stats2_lbl.setFont_(NSFont.systemFontOfSize_(11))
+    stats2_lbl.setTextColor_(_NSCh.secondaryLabelColor())
+    cv.addSubview_(stats2_lbl)
+
+    # Response text views
+    tv_h = H - _PAD - 58 - 32
+    sv1 = NSScrollView.alloc().initWithFrame_(((RX, 32), (half_rw, tv_h)))
+    sv1.setHasVerticalScroller_(True); sv1.setAutohidesScrollers_(True)
+    tv1 = NSTextView.alloc().initWithFrame_(((0, 0), (half_rw, tv_h)))
+    tv1.setFont_(NSFont.userFixedPitchFontOfSize_(11))
+    tv1.setEditable_(False)
+    tv1.setTextColor_(_NSCh.labelColor())
+    tv1.setBackgroundColor_(_NSCh.clearColor()); tv1.setDrawsBackground_(False)
+    sv1.setDocumentView_(tv1); cv.addSubview_(sv1)
+
+    sv2 = NSScrollView.alloc().initWithFrame_(((RX + half_rw + _GAP, 32), (half_rw, tv_h)))
+    sv2.setHasVerticalScroller_(True); sv2.setAutohidesScrollers_(True)
+    tv2 = NSTextView.alloc().initWithFrame_(((0, 0), (half_rw, tv_h)))
+    tv2.setFont_(NSFont.userFixedPitchFontOfSize_(11))
+    tv2.setEditable_(False)
+    tv2.setTextColor_(_NSCh.labelColor())
+    tv2.setBackgroundColor_(_NSCh.clearColor()); tv2.setDrawsBackground_(False)
+    sv2.setDocumentView_(tv2); cv.addSubview_(sv2)
+
+    # Vertical divider
+    from AppKit import NSBox as _NSBh
+    vdiv = _NSBh.alloc().initWithFrame_(((RX + half_rw + _GAP // 2, 28), (1, tv_h + 4)))
+    vdiv.setBoxType_(2); cv.addSubview_(vdiv)
+
+    # Export button
+    exp_btn = _btn("Export…", handler, "exportCompare:", ((_PAD, 10), (80, 24)))
+    cv.addSubview_(exp_btn)
+
+    # Wire table data source
+    class _CompareDS(NSObject):
+        def numberOfRowsInTableView_(self, tv): return len(history)
+        def tableView_objectValueForTableColumn_row_(self, tv, col, row):
+            e = history[row]
+            ts = e.get("ts", "")[:16].replace("T", " ")
+            return f"{ts}\n{e.get('model1','?')[:20]} vs {e.get('model2','?')[:20]}"
+        def tableViewSelectionDidChange_(self, notif):
+            tv = notif.object()
+            row = tv.selectedRow()
+            if row < 0 or row >= len(history): return
+            e = history[row]
+            prompt_lbl.setStringValue_(e.get("prompt", "")[:120])
+            m1_lbl.setStringValue_(e.get("model1", ""))
+            m2_lbl.setStringValue_(e.get("model2", ""))
+            stats1_lbl.setStringValue_(
+                f"{e.get('tps1', 0)} tok/s · {e.get('tokens1', 0)} tokens")
+            stats2_lbl.setStringValue_(
+                f"{e.get('tps2', 0)} tok/s · {e.get('tokens2', 0)} tokens")
+            tv1.setString_(e.get("response1", ""))
+            tv2.setString_(e.get("response2", ""))
+
+    ds = _CompareDS.alloc().init()
+    ds._history_ref = history
+    tbl.setDataSource_(ds)
+    tbl.setDelegate_(ds)
+    tbl.reloadData()
+    if history:
+        tbl.selectRowIndexes_byExtendingSelection_(
+            NSIndexSet.indexSetWithIndex_(0), False)
+
+    # Export callback
+    class _ExportCompare(NSObject):
+        def exportCompare_(self, _s):
+            row = tbl.selectedRow()
+            if row < 0 or row >= len(history): return
+            e = history[row]
+            from AppKit import NSSavePanel
+            sp = NSSavePanel.savePanel()
+            sp.setTitle_("Export Compare Result")
+            sp.setNameFieldStringValue_("compare.md")
+            sp.setAllowedFileTypes_(["md"])
+            NSApp.activateIgnoringOtherApps_(True)
+            if sp.runModal() == NSModalResponseOK:
+                path = Path(sp.URL().path())
+                md = (f"# Compare: {e.get('model1')} vs {e.get('model2')}\n\n"
+                      f"**Date:** {e.get('ts','')}\n\n"
+                      f"## Prompt\n\n{e.get('prompt','')}\n\n"
+                      f"## {e.get('model1')} "
+                      f"({e.get('tps1',0)} tok/s · {e.get('tokens1',0)} tokens)\n\n"
+                      f"{e.get('response1','')}\n\n"
+                      f"## {e.get('model2')} "
+                      f"({e.get('tps2',0)} tok/s · {e.get('tokens2',0)} tokens)\n\n"
+                      f"{e.get('response2','')}\n")
+                path.write_text(md)
+
+    ec = _ExportCompare.alloc().init()
+    exp_btn.setTarget_(ec)
+    handler._ds_ref = ds    # keep alive
+    handler._ec_ref = ec    # keep alive
+
+    NSApp.activateIgnoringOtherApps_(True)
+    panel.makeKeyAndOrderFront_(None)
+    NSApp.runModalForWindow_(panel)
+
+
 def run_bench_history_panel() -> None:
     """Show benchmark history in a WKWebView modal."""
     html = _bench_history_html()
     W, H = 820, 580
     handler = _PanelHandler.alloc().init()
     panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     panel.setTitle_("Benchmark History")
+    panel.setMinSize_((W, 400))
     panel.setDelegate_(handler)
     panel.center()
     panel.setTitlebarAppearsTransparent_(True)
@@ -2618,7 +2946,7 @@ def run_create_profile_panel(all_models: list[str],
     W, H = 420, 180
     handler = _PanelHandler.alloc().init()
     panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     panel.setTitle_("New Profile")
     panel.setDelegate_(handler)
     panel.center()
@@ -2705,6 +3033,9 @@ DEFAULTS = {
     "terminal_app":   "Terminal",   # "Terminal" | "iTerm2"
     "aliases":        {},         # {model_name: alias_string}
     "model_notes":    {},         # {model_name: note_string}
+    "model_tags":     {},         # {model_name: [tag, ...]}
+    "model_schedule": [],         # [{time: "HH:MM", model: "name"}, ...]
+    "schedule_enabled": False,    # whether schedule switching is active
     "model_params":   {},         # {model_name: {context, gpu_layers, max_tokens}}
     "hidden_models":  [],         # [model_name, ...]
     "pinned_models":  [],         # [model_name, ...] pinned to top of menu
@@ -3370,9 +3701,14 @@ class _ModelSearchDelegate(objc.lookUpClass("NSObject")):
                 kind = (entry[1] if entry else "mlx").upper()
                 if kind != self._engine_filter:
                     continue
-            # Text filter
-            if q and q not in (self._app._alias(n) or n).lower() and q not in n.lower():
-                continue
+            # Text filter (name, alias, and tags)
+            if q:
+                tags = self._app._cfg.get("model_tags", {}).get(n, [])
+                tag_match = any(q in t for t in tags)
+                if (q not in (self._app._alias(n) or n).lower()
+                        and q not in n.lower()
+                        and not tag_match):
+                    continue
             result.append(n)
         self._filtered = result
         if self._table:
@@ -3616,6 +3952,10 @@ class Switchman(rumps.App):
         # cannot create timers themselves (rumps.Timer from bg thread = no-op).
         self._idle_timer = rumps.Timer(self._on_idle_tick, 1)
         self._idle_timer.start()
+        # Schedule timer: checks model schedule every 60 seconds
+        self._schedule_timer = rumps.Timer(self._on_schedule_tick, 60)
+        self._schedule_timer.start()
+        self._schedule_last_fired: str | None = None  # "HH:MM" of last fired entry
         # Global hotkey ⌥Space — open the status bar menu from keyboard
         threading.Thread(target=self._register_hotkey, daemon=True).start()
 
@@ -3814,6 +4154,31 @@ class Switchman(rumps.App):
             self._watchdog_timer.stop()
             self._watchdog_timer = None
 
+    def _on_schedule_tick(self, _timer):
+        if not self._cfg.get("schedule_enabled"):
+            return
+        schedule = self._cfg.get("model_schedule", [])
+        if not schedule:
+            return
+        import datetime
+        now = datetime.datetime.now().strftime("%H:%M")
+        for entry in schedule:
+            t = entry.get("time", "")
+            model = entry.get("model", "")
+            if t == now and t != self._schedule_last_fired:
+                if model in self._model_map and model != self._active and not self._loading:
+                    self._schedule_last_fired = t
+                    self._load_model_by_name(model)
+                    send_model_ready_notification(model)
+                break
+        # Reset last_fired when minute changes
+        if self._schedule_last_fired and self._schedule_last_fired != now:
+            self._schedule_last_fired = None
+
+    def _open_schedule_panel(self, _=None):
+        run_schedule_panel(self._cfg, self._model_map)
+        self._cfg = load_config()
+
     def _on_watchdog_tick(self, _timer):
         if not self._active or self._loading:
             return
@@ -3975,9 +4340,12 @@ class Switchman(rumps.App):
 
         meta = self._get_model_meta(name)
         note = self._cfg["model_notes"].get(name, "")
+        tags = self._cfg.get("model_tags", {}).get(name, [])
         for meta_label in meta:
             parent.add(rumps.MenuItem(meta_label, callback=None))
-        if meta:
+        if tags:
+            parent.add(rumps.MenuItem(f"  🏷 {', '.join(tags)}", callback=None))
+        if meta or tags:
             parent.add(None)
         if note:
             parent._menuitem.setToolTip_(note)
@@ -4040,6 +4408,8 @@ class Switchman(rumps.App):
         s.add(rumps.MenuItem("  Manage Visible Models…", callback=self._open_manage_models))
         s.add(None)
         s.add(rumps.MenuItem("  Quick Test Prompt…", callback=self._open_test_prompt))
+        s.add(rumps.MenuItem("  Compare History…", callback=self._open_compare_history))
+        s.add(rumps.MenuItem("  Model Schedule…", callback=self._open_schedule_panel))
         s.add(rumps.MenuItem("  Benchmark History…", callback=self._open_bench_history))
         s.add(rumps.MenuItem("  Server Logs…", callback=self._open_server_logs))
         s.add(None)
@@ -4415,7 +4785,7 @@ class Switchman(rumps.App):
         """Create and show a non-modal progress window. Called on main thread."""
         W, H = 560, 320
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            ((0, 0), (W, H)), 3, NSBackingStoreBuffered, False)
+            ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
         win.setTitle_(f"Benchmarking — {name}")
         win.center()
         win.setTitlebarAppearsTransparent_(True)
@@ -4694,6 +5064,9 @@ class Switchman(rumps.App):
 
     def _open_bench_history(self, _):
         run_bench_history_panel()
+
+    def _open_compare_history(self, _):
+        run_compare_history_panel()
 
     def _open_test_prompt(self, _):
         if self._test_prompt_win is not None:
@@ -5092,26 +5465,68 @@ class _HFDownloadHandler(NSObject):
         self._info_lbl.setStringValue_(
             f"{sz_str}↓ {downloads:,}  ❤ {likes:,}  —  {repo_id}")
 
-    # ── Download ──────────────────────────────────────────────────────────────
+    # ── Queue management ──────────────────────────────────────────────────────
 
-    def download_(self, _s):
-        if self._downloading:
-            return
+    def addToQueue_(self, _s):
         idx = self._results_popup.indexOfSelectedItem()
         if idx < 0 or idx >= len(self._results):
             self._status_lbl.setStringValue_("Select a result first.")
             return
         m = self._results[idx]
         repo_id = m.get("modelId", m.get("id", ""))
-        dest_dir = Path(self._dest_fld.stringValue().strip()).expanduser()
+        dest_dir = self._dest_fld.stringValue().strip()
+        filter_tag = self._filter_popup.titleOfSelectedItem()
+        # Avoid duplicates
+        if any(e["repo_id"] == repo_id for e in self._dl_queue):
+            self._status_lbl.setStringValue_(f"Already queued: {repo_id}")
+            return
+        self._dl_queue.append({
+            "repo_id": repo_id, "dest_dir": dest_dir,
+            "filter_tag": filter_tag, "status": "Queued"
+        })
+        self._queue_tbl.reloadData()
+        self._status_lbl.setStringValue_(f"Queued: {repo_id}  ({len(self._dl_queue)} in queue)")
+        # Start queue processing if idle
+        if not self._downloading:
+            self._processQueue()
+
+    def cancelQueueItem_(self, _s):
+        row = self._queue_tbl.selectedRow()
+        if row < 0 or row >= len(self._dl_queue):
+            return
+        entry = self._dl_queue[row]
+        if entry.get("status") == "Downloading":
+            # Signal the active download to abort
+            self._dl_cancelled = True
+        else:
+            self._dl_queue.pop(row)
+            self._queue_tbl.reloadData()
+
+    def _processQueue(self):
+        """Start the next queued download if not already downloading."""
+        if self._downloading:
+            return
+        # Find next Queued entry
+        for entry in self._dl_queue:
+            if entry["status"] == "Queued":
+                entry["status"] = "Downloading"
+                self._queue_tbl.reloadData()
+                self._startDownloadEntry_(entry)
+                return
+
+    def _startDownloadEntry_(self, entry):
+        self._dl_active_entry = entry
+        repo_id = entry["repo_id"]
+        dest_dir = Path(entry["dest_dir"]).expanduser()
         if not dest_dir.exists():
-            self._status_lbl.setStringValue_(f"Directory not found: {dest_dir}")
+            entry["status"] = "Error: dir missing"
+            self._queue_tbl.reloadData()
+            self._processQueue()
             return
         model_dir = dest_dir / repo_id.split("/")[-1]
-        # Byte counter updated directly by our tqdm shim on every HTTP chunk.
         byte_counter = type('_C', (), {'bytes_done': 0})()
-        tqdm_cls = _make_hf_tqdm_class(byte_counter)
         self._downloading = True
+        self._dl_cancelled = False
         self._dl_error = None
         self._dl_success_path = None
         self._dl_model_dir = model_dir
@@ -5120,14 +5535,12 @@ class _HFDownloadHandler(NSObject):
         self._dl_size_fetched = False
         self._dl_prev_done = 0
         self._dl_prev_time = 0.0
+        self._dl_active_entry = entry
         self._dl_btn.setEnabled_(False)
         self._progress.setIndeterminate_(False)
-        self._progress.setMinValue_(0.0)
-        self._progress.setMaxValue_(100.0)
         self._progress.setDoubleValue_(0.0)
         self._status_lbl.setStringValue_(f"Fetching size for {repo_id}…")
-        save_pending_download(repo_id, str(dest_dir),
-                              self._filter_popup.titleOfSelectedItem())
+        save_pending_download(repo_id, str(dest_dir), entry["filter_tag"])
 
         def _do():
             try:
@@ -5135,39 +5548,29 @@ class _HFDownloadHandler(NSObject):
                 import requests
                 from huggingface_hub import model_info as hf_model_info, hf_hub_url
                 from huggingface_hub.utils import build_hf_headers
-
                 hf_token = self._app_ref._cfg.get("hf_token", "").strip() if self._app_ref else ""
                 ignore = ["*.bin", "*.pt", "original/*"]
-
-                # Fetch file list + sizes
                 try:
-                    info = hf_model_info(repo_id, files_metadata=True,
-                                         token=hf_token or None)
+                    info = hf_model_info(repo_id, files_metadata=True, token=hf_token or None)
                     siblings = info.siblings or []
                 except Exception:
                     siblings = []
-
-                # Filter ignored patterns
-                files = [
-                    s for s in siblings
-                    if not any(fnmatch.fnmatch(s.rfilename, pat) for pat in ignore)
-                ]
-
+                files = [s for s in siblings
+                         if not any(fnmatch.fnmatch(s.rfilename, pat) for pat in ignore)]
                 total_bytes = sum((s.size or 0) for s in files)
                 self._dl_bytes_total = total_bytes
                 self._dl_size_fetched = True
-
                 headers = build_hf_headers(token=hf_token or None)
                 model_dir.mkdir(parents=True, exist_ok=True)
-
                 for sib in files:
+                    if getattr(self, '_dl_cancelled', False):
+                        raise Exception("Cancelled")
                     fname = sib.rfilename
                     url = hf_hub_url(repo_id, fname)
                     dest = model_dir / fname
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     expected = sib.size or 0
                     resume = dest.stat().st_size if dest.exists() else 0
-                    # Skip files already fully downloaded
                     if expected and resume >= expected:
                         byte_counter.bytes_done += expected
                         continue
@@ -5180,103 +5583,86 @@ class _HFDownloadHandler(NSObject):
                         mode = "ab" if resume else "wb"
                         with open(dest, mode) as fh:
                             for chunk in r.iter_content(chunk_size=256 * 1024):
+                                if getattr(self, '_dl_cancelled', False):
+                                    raise Exception("Cancelled")
                                 if chunk:
                                     fh.write(chunk)
                                     byte_counter.bytes_done += len(chunk)
-
                 self._dl_success_path = str(model_dir)
             except Exception as e:
                 self._dl_error = str(e)
 
         threading.Thread(target=_do, daemon=True).start()
-        self._dl_poll = rumps.Timer(self.pollDownload_, 1.0)
+        self._dl_poll = rumps.Timer(self._pollQueueDownload, 1.0)
         self._dl_poll.start()
 
-    def pollDownload_(self, timer):
+    def _pollQueueDownload_(self, timer):
+        """Poll for active queue item completion, then chain to next."""
         total = self._dl_bytes_total
         size_fetched = getattr(self, '_dl_size_fetched', False)
-
-        # Still fetching size
         if not size_fetched and self._dl_error is None and self._dl_success_path is None:
             return
-
-        # Read bytes received directly from the tqdm shim — no disk polling.
         now = time.time()
         counter = getattr(self, '_dl_byte_counter', None)
-        done = counter.bytes_done if counter is not None else 0
-
-        # Compute MB/s from delta since last poll
+        done = counter.bytes_done if counter else 0
         prev_done = getattr(self, '_dl_prev_done', 0)
         prev_time = getattr(self, '_dl_prev_time', now)
         dt = now - prev_time
         speed_str = ""
         if dt > 0 and done > prev_done:
-            mbps = (done - prev_done) / dt / 1_048_576
-            speed_str = f"  {mbps:.1f} MB/s"
+            speed_str = f"  {(done - prev_done) / dt / 1_048_576:.1f} MB/s"
         self._dl_prev_done = done
         self._dl_prev_time = now
-
         if total > 0:
             pct = min(done / total * 100, 99.0)
             self._progress.setDoubleValue_(pct)
-            done_gb = done / 1_073_741_824
-            total_gb = total / 1_073_741_824
             self._status_lbl.setStringValue_(
-                f"{done_gb:.2f} / {total_gb:.2f} GB  ({pct:.0f}%){speed_str}")
+                f"{done/1e9:.2f} / {total/1e9:.2f} GB  ({pct:.0f}%){speed_str}")
         elif size_fetched:
-            done_gb = done / 1_073_741_824
-            self._status_lbl.setStringValue_(f"{done_gb:.2f} GB downloaded…{speed_str}")
-
+            self._status_lbl.setStringValue_(f"{done/1e9:.2f} GB…{speed_str}")
         if self._dl_success_path is None and self._dl_error is None:
-            return   # still running
-
+            return
         timer.stop()
         self._dl_poll = None
         self._dl_btn.setEnabled_(True)
         self._downloading = False
         clear_pending_download()
+        entry = getattr(self, '_dl_active_entry', None)
         if self._dl_error:
             self._progress.setDoubleValue_(0.0)
-            self._status_lbl.setStringValue_(f"Error: {self._dl_error}")
+            err = self._dl_error
             self._dl_error = None
+            if entry:
+                entry["status"] = "Cancelled" if "Cancelled" in err else "Error"
+            self._queue_tbl.reloadData()
+            self._status_lbl.setStringValue_(f"{'Cancelled' if 'Cancelled' in err else f'Error: {err}'}")
         else:
             success_path = self._dl_success_path
-            self._progress.setDoubleValue_(100.0)
-            self._status_lbl.setStringValue_(f"✓ Done — {success_path}")
             self._dl_success_path = None
-            if self._app_ref is not None:
+            self._progress.setDoubleValue_(100.0)
+            if entry:
+                entry["status"] = "✓ Done"
+            self._queue_tbl.reloadData()
+            self._status_lbl.setStringValue_(f"✓ Done — {success_path}")
+            if self._app_ref:
                 app = self._app_ref
                 model_name = Path(success_path).name
-
-                # Hide by default — ask the user what they want
                 if model_name not in app._cfg["hidden_models"]:
                     app._cfg["hidden_models"].append(model_name)
                     save_config(app._cfg)
-
                 app._model_meta_cache.clear()
                 app._rebuild_pending = True
                 app._prime_meta_cache()
+        # Remove done/cancelled/error items from queue and process next
+        self._dl_queue[:] = [e for e in self._dl_queue if e.get("status") == "Queued"]
+        self._queue_tbl.reloadData()
+        self._processQueue()
 
-                # Ask whether to add to menu / set as default / keep hidden
-                from AppKit import NSAlert
-                alert = NSAlert.alloc().init()
-                alert.setMessageText_(f'"{model_name}" downloaded')
-                alert.setInformativeText_(
-                    "Add it to the model menu, set it as your default (★), "
-                    "or keep it hidden until you're ready.")
-                alert.addButtonWithTitle_("Set as Default ★")
-                alert.addButtonWithTitle_("Add to Menu")
-                alert.addButtonWithTitle_("Keep Hidden")
-                NSApp.activateIgnoringOtherApps_(True)
-                resp = alert.runModal()
+    # ── Download (single — kept for backward compat, now delegates to queue) ──
 
-                if resp in (1000, 1001):   # Set as Default OR Add to Menu
-                    if model_name in app._cfg["hidden_models"]:
-                        app._cfg["hidden_models"].remove(model_name)
-                    if resp == 1000:       # Set as Default
-                        app._cfg["default_model"] = model_name
-                    save_config(app._cfg)
-                    app._rebuild_pending = True
+    def download_(self, _s):
+        """Download immediately — adds to queue and starts if idle."""
+        self.addToQueue_(_s)
 
     # ── Browse / Close ────────────────────────────────────────────────────────
 
@@ -5430,8 +5816,9 @@ def _make_hf_download_window(app):
     """Build the HuggingFace download NSWindow. Returns (win, handler)."""
     W, H = 640, 320
     win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     win.setTitle_("Download from HuggingFace")
+    win.setMinSize_((W, 400))
     win.center()
     win.setTitlebarAppearsTransparent_(True)
     win.setMovableByWindowBackground_(True)
@@ -5549,6 +5936,45 @@ def _make_hf_download_window(app):
     cv.addSubview_(sl)
     handler._status_lbl = sl
 
+    # ── Queue list ────────────────────────────────────────────────────────────
+    y -= 16
+    q_lbl = _lbl("Queue:", ((_PAD, y), (50, 14)), right=False)
+    q_lbl.setFont_(NSFont.systemFontOfSize_(11))
+    cv.addSubview_(q_lbl)
+
+    from AppKit import NSTableView, NSScrollView as _NSSV2, NSTableColumn
+    q_scroll = _NSSV2.alloc().initWithFrame_(((_PAD, y - 80), (W - _PAD*2, 76)))
+    q_scroll.setHasVerticalScroller_(True); q_scroll.setAutohidesScrollers_(True)
+    q_tbl = NSTableView.alloc().initWithFrame_(((0, 0), (W - _PAD*2, 76)))
+    for ident, title, width in [
+        ("repo", "Model", W - _PAD*2 - 80 - 80 - 4),
+        ("status", "Status", 80),
+    ]:
+        c = NSTableColumn.alloc().initWithIdentifier_(ident)
+        c.setWidth_(width)
+        c.headerCell().setStringValue_(title)
+        q_tbl.addTableColumn_(c)
+    q_tbl.setUsesAlternatingRowBackgroundColors_(True)
+    q_tbl.setRowHeight_(18)
+    q_scroll.setDocumentView_(q_tbl)
+    cv.addSubview_(q_scroll)
+    handler._queue_tbl = q_tbl
+    handler._dl_queue = []   # list of {repo_id, dest_dir, filter_tag, status}
+
+    class _QueueDS(NSObject):
+        def numberOfRowsInTableView_(self, tv):
+            return len(handler._dl_queue)
+        def tableView_objectValueForTableColumn_row_(self, tv, col, row):
+            e = handler._dl_queue[row]
+            ident = col.identifier()
+            if ident == "repo":
+                return e.get("repo_id", "")
+            return e.get("status", "Queued")
+    q_ds = _QueueDS.alloc().init()
+    q_tbl.setDataSource_(q_ds)
+    q_tbl.reloadData()
+    handler._queue_ds = q_ds
+
     # ── Buttons ───────────────────────────────────────────────────────────────
     cv.addSubview_(_btn("Close", handler, "closeWin:",
                         ((_PAD, _BTN_BOT), (80, _BTN_H))))
@@ -5557,6 +5983,16 @@ def _make_hf_download_window(app):
     cv.addSubview_(dl_btn)
     handler._dl_btn = dl_btn
 
+    queue_btn = _btn("+ Queue", handler, "addToQueue:",
+                     ((W - _PAD - 120 - _GAP - 90, _BTN_BOT), (90, _BTN_H)))
+    cv.addSubview_(queue_btn)
+    handler._queue_btn = queue_btn
+
+    cancel_btn = _btn("✕ Cancel", handler, "cancelQueueItem:",
+                      ((W - _PAD - 120 - _GAP - 90 - _GAP - 90, _BTN_BOT), (90, _BTN_H)))
+    cv.addSubview_(cancel_btn)
+    handler._cancel_btn = cancel_btn
+
     return win, handler
 
 
@@ -5564,8 +6000,9 @@ def _make_log_window(app) -> NSWindow:
     """Open a floating window tailing the oMLX launchd log."""
     W, H = 700, 420
     win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     win.setTitle_("Server Logs — oMLX")
+    win.setMinSize_((W, 300))
     win.center()
     _constrain_to_screen(win)
     win.setTitlebarAppearsTransparent_(True)

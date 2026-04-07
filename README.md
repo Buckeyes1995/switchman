@@ -72,26 +72,32 @@ If you want a polished GUI with model discovery and a chat interface, use LM Stu
 - **Live status in menu bar** — shows active model name; `⚡` icon with memory pressure indicator
 - **Default model at startup** — auto-loads your preferred model on every launch
 - **Download from HuggingFace** — search, preview size, and download with real-time MB/s progress; resumes interrupted downloads automatically
-- **Quick model search** — floating search panel with type-to-filter and keyboard navigation
-- **Quick Test Prompt** — stream responses with TTFT, tok/s, and context stats; side-by-side compare mode
+- **Quick model search** — floating search panel with type-to-filter, keyboard navigation, and tag filtering
+- **Quick Test Prompt** — stream responses with TTFT, tok/s, and context stats; sequential side-by-side compare mode with history saved to `~/.config/switchman/compare_history.json`
+- **Prompt library** — save/recall prompts; AI-generated suggestions built in
+- **Model load time prediction** — rolling average of last 3 load times shown as countdown during load
 - **Benchmarking** — API benchmark (any model) and full llama-bench parameter sweeps (GGUF)
 - **Benchmark history** — interactive Chart.js bar chart with CSV export
-- **Per-model settings** — context, tokens, temperature, penalties, GPU layers, thinking mode, sampling presets
+- **Per-model settings** — context, tokens, temperature, penalties, GPU layers, thinking mode, sampling presets, tags
+- **Model tagging** — free-form comma-separated tags per model; shown in menu and searched in search panel
+- **Scheduled model switching** — define day-of-week + time rules; background timer switches automatically
 - **Server crash watchdog** — detects and notifies on unexpected server death
 
 ## Additional Features
 
 - **Model deletion** — delete a model from disk directly from the menu with confirmation
 - **Disk space indicator** — shows free space on destination volume before downloading
+- **Download queue** — queue multiple HuggingFace repos; downloads proceed sequentially with per-item cancel
 - **Profiles** — save and apply parameter sets across models in one click
 - **Memory pressure indicator** — 🟢/🟡/🔴 badge; shown in menu bar when critical
 - **Model notes & aliases** — annotate or rename any model without touching files
 - **Hide / unhide models** — declutter the menu without deleting anything
 - **Recent models** — last 5 selections pinned to the top of the menu
+- **Compare history** — browse saved side-by-side Quick Test results
 - **Copy model ID** — copies `omlx/ModelName` for use in any OpenAI-compatible client
 - **Global hotkey ⌥Space** — open the menu from anywhere (requires Accessibility permission)
 - **macOS notifications** — fires when a model loads or a server crashes
-- **opencode sync** *(optional)* — keeps opencode config in sync on every switch; Continue.dev and Aider/Zed support planned
+- **opencode sync** *(optional)* — keeps opencode config in sync on every switch; Aider, Zed, and Continue.dev supported
 
 ---
 

@@ -65,20 +65,24 @@ Up/down arrow keys cycle previous prompts. Stored in `~/.config/switchman/prompt
 ~~One-click export of the full config to a single JSON file.~~
 Available under ⚙ Settings → Export Settings… / Import Settings…
 
-### Scheduled Model Switching
-Define a schedule (e.g., fast small model during the day, large model overnight). Uses launchd or a background timer. Useful when large models need quiet time to load into unified memory.
+### ~~Scheduled Model Switching~~ ✓ Done
+~~Define a schedule (e.g., fast small model during the day, large model overnight).~~
+"Model Schedule…" in Settings submenu. Define day-of-week + HH:MM + model name rules. A 60s background timer checks and switches automatically.
 
-### Model Tagging
-Tag models with free-form labels (e.g., `coding`, `reasoning`, `vision`, `fast`). Filter the menu and search by tag. Stored in config.
+### ~~Model Tagging~~ ✓ Done
+~~Tag models with free-form labels (e.g., `coding`, `reasoning`, `vision`, `fast`). Filter the menu and search by tag. Stored in config.~~
+Tag field in per-model settings (comma-separated). Tags shown as `🏷 coding, fast` in the menu. Search panel matches tags.
 
-### Download Queue
-Queue multiple HuggingFace downloads. Show overall queue progress in the menu bar. Cancel individual items.
+### ~~Download Queue~~ ✓ Done
+~~Queue multiple HuggingFace downloads. Show overall queue progress in the menu bar. Cancel individual items.~~
+Download window now shows a queue table with status column. Multiple repos can be queued; downloads proceed sequentially. "✕ Cancel" button per item.
 
 ### ~~HuggingFace Authentication~~ ✓ Done
 `HF token` field in Settings → Sync. Passed to `hf_model_info` and `build_hf_headers` for gated model downloads. (Keychain storage is a future enhancement.)
 
-### Model Comparison History
-Save side-by-side compare results from Quick Test to a history file. Browse and export past comparisons.
+### ~~Model Comparison History~~ ✓ Done
+~~Save side-by-side compare results from Quick Test to a history file. Browse and export past comparisons.~~
+Results saved to `~/.config/switchman/compare_history.json` (last 50 entries). "Compare History…" in Settings submenu opens a scrollable panel.
 
 ### ~~IDE / Client Sync — Aider~~ ✓ Done
 Writes `~/.aider.conf.yml` (port + model name) on every switch. Toggle in Settings → Sync.
@@ -142,8 +146,9 @@ macOS notification includes elapsed load time in seconds (e.g. "Model ready (42s
 
 ## New Planned Features
 
-### Resizable Panels
-Settings, Quick Test, and Benchmark windows currently have fixed sizes. Allow resizing with `setMinSize_` / `setMaxSize_` and auto-layout so fields stretch with the window.
+### ~~Resizable Panels~~ ✓ Done
+~~Settings, Quick Test, and Benchmark windows currently have fixed sizes.~~
+All major windows (Settings, Quick Test, Benchmark, Compare History, Schedule) use style mask 15 (resizable) with `setMinSize_` floors.
 
 ### Model Favorites / Pinning
 Let users pin any model to the top of the menu (above Recent) regardless of recency. Stored as `pinned_models: []` in config.
@@ -190,16 +195,6 @@ Save the current prompt + response pair to a Markdown file via NSSavePanel. Usef
 - Token-per-dollar cost display (for hosted model comparison)
 - Integration with `llm` CLI tool (Simon Willison's)
 - Auto-detect new models dropped into model directories (FSEvents watcher)
-- **Resizable panels** — let the user drag to resize Settings and Quick Test windows
-- **Model Favorites / Pinning** — pin any model to the top of the menu, above Recent
-- **Context length in title** — show ctx% in menu bar title after Quick Test (e.g. `⚡ Qwen 12%`)
-- **Multi-line prompt support** — shift+enter inserts newline in Quick Test input
-- **Copy last response** — one-click button to copy entire Quick Test output to clipboard
-- **Quick Test font size** — slider or +/- buttons to resize the output monospace font
-- **Thermal / CPU stats** — show thermal state (nominal/fair/serious/critical) alongside memory pressure
-- **Model notes in tooltip** — show model note as NSToolTip on the menu item instead of a submenu entry
-- **Keyboard shortcut to load default model** — global hotkey that immediately loads the ★ default model
-- **Export Quick Test session** — save prompt + response pair to a Markdown file
 
 ---
 
