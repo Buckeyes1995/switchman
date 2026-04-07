@@ -541,10 +541,14 @@ class _TestPromptHandler(NSObject):
             p = self._app_ref._model_params(model) if hasattr(self._app_ref, "_model_params") else {}
             self._prompt_tokens = 0
             self._ctx_max = (p.get("context", 32768) if p else 32768)
+            # Inline param controls override per-model defaults when params row is open
+            qt_temp = cfg.get("qt_temperature", p.get("temperature", 0.7) if p else 0.7)
+            qt_max  = cfg.get("qt_max_tokens",  p.get("max_tokens",  512)  if p else 512)
             body = json.dumps({
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": p.get("max_tokens", 512) if p else 512,
+                "max_tokens": qt_max,
+                "temperature": qt_temp,
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }).encode()
@@ -858,6 +862,91 @@ class _TestPromptHandler(NSObject):
         if hasattr(self, '_vdiv'):
             self._vdiv.setHidden_(not on)
 
+    # ── Inline param controls ──────────────────────────────────────────────────
+
+    _PARAM_VIEWS = ('_temp_lbl', '_temp_slider', '_temp_val_lbl',
+                    '_maxtok_lbl', '_maxtok_fld', '_maxtok_step',
+                    '_tok_counter_lbl', '_preset_popup')
+
+    def paramsToggled_(self, sender):
+        on = bool(sender.state())
+        for attr in self._PARAM_VIEWS:
+            v = getattr(self, attr, None)
+            if v:
+                v.setHidden_(not on)
+        # Start/stop token counter timer
+        if on:
+            if not getattr(self, '_tok_ctr_timer', None):
+                self._tok_ctr_timer = rumps.Timer(self._updateTokenCounter_, 0.5)
+                self._tok_ctr_timer.start()
+        else:
+            t = getattr(self, '_tok_ctr_timer', None)
+            if t:
+                t.stop()
+                self._tok_ctr_timer = None
+
+    def _updateTokenCounter_(self, timer):
+        lbl = getattr(self, '_tok_counter_lbl', None)
+        if not lbl or lbl.isHidden():
+            return
+        text = self._input_fld.string() if hasattr(self, '_input_fld') else ""
+        approx = max(1, int(len(text) / 3.5))
+        lbl.setStringValue_(f"~{approx} tokens")
+
+    def tempChanged_(self, sender):
+        val = round(sender.floatValue(), 2)
+        lbl = getattr(self, '_temp_val_lbl', None)
+        if lbl:
+            lbl.setStringValue_(f"{val:.1f}")
+        if self._app_ref:
+            self._app_ref._cfg["qt_temperature"] = val
+            save_config(self._app_ref._cfg)
+        # Any manual change → set preset to Custom
+        pp = getattr(self, '_preset_popup', None)
+        if pp:
+            pp.selectItemWithTitle_("Custom")
+
+    def maxTokensChanged_(self, sender):
+        val = int(sender.intValue())
+        fld = getattr(self, '_maxtok_fld', None)
+        if fld:
+            fld.setStringValue_(str(val))
+        if self._app_ref:
+            self._app_ref._cfg["qt_max_tokens"] = val
+            save_config(self._app_ref._cfg)
+        pp = getattr(self, '_preset_popup', None)
+        if pp:
+            pp.selectItemWithTitle_("Custom")
+
+    def presetChanged_(self, sender):
+        preset = sender.titleOfSelectedItem()
+        if self._app_ref:
+            self._app_ref._cfg["qt_preset"] = preset
+            save_config(self._app_ref._cfg)
+        presets = {
+            "Precise":  (0.2, 512),
+            "Balanced": (0.7, 1024),
+            "Creative": (1.2, 2048),
+        }
+        if preset in presets:
+            temp, maxtok = presets[preset]
+            sl = getattr(self, '_temp_slider', None)
+            if sl:
+                sl.setFloatValue_(temp)
+            vl = getattr(self, '_temp_val_lbl', None)
+            if vl:
+                vl.setStringValue_(f"{temp:.1f}")
+            st = getattr(self, '_maxtok_step', None)
+            if st:
+                st.setIntValue_(maxtok)
+            fl = getattr(self, '_maxtok_fld', None)
+            if fl:
+                fl.setStringValue_(str(maxtok))
+            if self._app_ref:
+                self._app_ref._cfg["qt_temperature"] = temp
+                self._app_ref._cfg["qt_max_tokens"] = maxtok
+                save_config(self._app_ref._cfg)
+
     def _save_compare_result(self):
         import datetime
         prompt = getattr(self, '_prompt_for_compare', "")
@@ -1032,10 +1121,13 @@ class _TestPromptHandler(NSObject):
             port = cfg.get("omlx_port", 8000)
             api_key = cfg.get("omlx_api_key", "")
             p = self._app_ref._model_params(model2_name) if hasattr(self._app_ref, "_model_params") else {}
+            qt_temp = cfg.get("qt_temperature", p.get("temperature", 0.7) if p else 0.7)
+            qt_max  = cfg.get("qt_max_tokens",  p.get("max_tokens",  512)  if p else 512)
             body = json.dumps({
                 "model": model2_name,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": p.get("max_tokens", 512) if p else 512,
+                "max_tokens": qt_max,
+                "temperature": qt_temp,
                 "stream": True,
             }).encode()
             req = urllib.request.Request(
@@ -1087,6 +1179,9 @@ class _TestPromptHandler(NSObject):
         if hasattr(self, '_load_poll_timer') and self._load_poll_timer:
             self._load_poll_timer.stop()
             self._load_poll_timer = None
+        if getattr(self, '_tok_ctr_timer', None):
+            self._tok_ctr_timer.stop()
+            self._tok_ctr_timer = None
         app = self._app_ref
         if app:
             app._test_prompt_win = None
@@ -1198,9 +1293,90 @@ def _make_test_prompt_window(app) -> NSWindow:
     cv.addSubview_(model2_popup)
     handler._model2_popup = model2_popup
 
+    # ── Inline param row (collapsible) ────────────────────────────────────────
+    from AppKit import (
+        NSSlider as _NSSlider, NSStepper as _NSStepper,
+        NSBox as _NSBox,
+    )
+    PARAM_H = 24
+    PARAM_Y = ROW2_Y - _GAP - PARAM_H
+
+    params_chk = NSButton.alloc().initWithFrame_(
+        ((_PAD, PARAM_Y), (90, PARAM_H)))
+    params_chk.setButtonType_(3)
+    params_chk.setTitle_("⚙ Params")
+    params_chk.setState_(0)
+    params_chk.setTarget_(handler)
+    params_chk.setAction_("paramsToggled:")
+    params_chk.setAutoresizingMask_(_TOP)
+    cv.addSubview_(params_chk)
+    handler._params_chk = params_chk
+
+    # Temperature slider  0.0 – 2.0
+    saved_temp = app._cfg.get("qt_temperature", 0.7)
+    saved_max  = app._cfg.get("qt_max_tokens", 512)
+    saved_preset = app._cfg.get("qt_preset", "Custom")
+
+    px = _PAD + 95
+    temp_lbl = _lbl("Temp:", ((px, PARAM_Y + 4), (38, 16)), right=False)
+    temp_lbl.setHidden_(True); temp_lbl.setAutoresizingMask_(_TOP)
+    cv.addSubview_(temp_lbl); handler._temp_lbl = temp_lbl
+
+    px += 42
+    temp_slider = _NSSlider.alloc().initWithFrame_(((px, PARAM_Y + 2), (100, 20)))
+    temp_slider.setMinValue_(0.0); temp_slider.setMaxValue_(2.0)
+    temp_slider.setFloatValue_(saved_temp)
+    temp_slider.setTarget_(handler); temp_slider.setAction_("tempChanged:")
+    temp_slider.setHidden_(True); temp_slider.setAutoresizingMask_(_TOP)
+    cv.addSubview_(temp_slider); handler._temp_slider = temp_slider
+
+    px += 104
+    temp_val_lbl = _lbl(f"{saved_temp:.1f}", ((px, PARAM_Y + 4), (32, 16)), right=False)
+    temp_val_lbl.setHidden_(True); temp_val_lbl.setAutoresizingMask_(_TOP)
+    cv.addSubview_(temp_val_lbl); handler._temp_val_lbl = temp_val_lbl
+
+    # Max tokens stepper
+    px += 38
+    maxtok_lbl = _lbl("Max:", ((px, PARAM_Y + 4), (34, 16)), right=False)
+    maxtok_lbl.setHidden_(True); maxtok_lbl.setAutoresizingMask_(_TOP)
+    cv.addSubview_(maxtok_lbl); handler._maxtok_lbl = maxtok_lbl
+
+    px += 38
+    maxtok_fld = NSTextField.alloc().initWithFrame_(((px, PARAM_Y + 2), (52, 20)))
+    maxtok_fld.setStringValue_(str(saved_max))
+    maxtok_fld.setFont_(NSFont.systemFontOfSize_(11))
+    maxtok_fld.setHidden_(True); maxtok_fld.setAutoresizingMask_(_TOP)
+    cv.addSubview_(maxtok_fld); handler._maxtok_fld = maxtok_fld
+
+    px += 56
+    maxtok_step = _NSStepper.alloc().initWithFrame_(((px, PARAM_Y + 2), (19, 20)))
+    maxtok_step.setMinValue_(64); maxtok_step.setMaxValue_(32768)
+    maxtok_step.setIncrement_(64); maxtok_step.setIntValue_(saved_max)
+    maxtok_step.setTarget_(handler); maxtok_step.setAction_("maxTokensChanged:")
+    maxtok_step.setHidden_(True); maxtok_step.setAutoresizingMask_(_TOP)
+    cv.addSubview_(maxtok_step); handler._maxtok_step = maxtok_step
+
+    # Token counter label (live char÷3.5 estimate)
+    px += 24
+    tok_counter_lbl = _lbl("", ((px, PARAM_Y + 4), (100, 16)), right=False)
+    from AppKit import NSColor as _NSColorPrm
+    tok_counter_lbl.setTextColor_(_NSColorPrm.secondaryLabelColor())
+    tok_counter_lbl.setFont_(NSFont.systemFontOfSize_(10))
+    tok_counter_lbl.setHidden_(True); tok_counter_lbl.setAutoresizingMask_(_TOP)
+    cv.addSubview_(tok_counter_lbl); handler._tok_counter_lbl = tok_counter_lbl
+
+    # Preset popup
+    px += 104
+    preset_popup = NSPopUpButton.alloc().initWithFrame_(((px, PARAM_Y), (120, PARAM_H)))
+    for p in ("Precise", "Balanced", "Creative", "Custom"):
+        preset_popup.addItemWithTitle_(p)
+    preset_popup.selectItemWithTitle_(saved_preset)
+    preset_popup.setTarget_(handler); preset_popup.setAction_("presetChanged:")
+    preset_popup.setHidden_(True); preset_popup.setAutoresizingMask_(_TOP | _WGROW)
+    cv.addSubview_(preset_popup); handler._preset_popup = preset_popup
+
     # Separator between input rows and output area
-    from AppKit import NSBox as _NSBox
-    sep_y = ROW2_Y - _GAP - 6
+    sep_y = PARAM_Y - _GAP - 4
     sep = _NSBox.alloc().initWithFrame_(((_PAD, sep_y), (W - _PAD*2, 1)))
     sep.setBoxType_(2)  # NSBoxSeparator
     sep.setAutoresizingMask_(_TOP | _WGROW)
