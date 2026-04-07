@@ -651,7 +651,7 @@ def _make_test_prompt_window(app) -> NSWindow:
     W, H = 760, 480
     BOT = 48
     win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
+        ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     win.setTitle_("Quick Test Prompt")
     win.center()
     _constrain_to_screen(win)
