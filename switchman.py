@@ -597,7 +597,7 @@ class _TestPromptHandler(NSObject):
         phase = getattr(self, '_sequential_phase', None)
         # Flash helper for right panel status messages (every 5 ticks = 0.5s)
         self._cmp_tick = getattr(self, '_cmp_tick', 0) + 1
-        _flash_on = (self._cmp_tick % 5) < 3   # on for 3 ticks, off for 2
+        _flash_on = (self._cmp_tick % 20) < 12   # on for 1.2s, off for 0.8s
         def _set_tv2_flash(msg):
             if not hasattr(self, '_output_tv2'):
                 return
@@ -658,7 +658,7 @@ class _TestPromptHandler(NSObject):
             self._output_tv2.scrollRangeToVisible_(
                 (self._output_tv2.string().length(), 0))
         elapsed = (self._t_end or time.time()) - self._t0
-        if self._tok_count > 0 and elapsed > 0:
+        if self._tok_count > 0 and elapsed > 0 and not getattr(self, '_showing_load_status', False):
             ttft_part = ""
             if self._t_first is not None and not self._ttft_shown:
                 ttft_ms = (self._t_first - self._t0) * 1000
@@ -1004,6 +1004,7 @@ class _TestPromptHandler(NSObject):
             picker.orderOut_(None)
 
     def _do_stream2(self, prompt, model2_name):
+        import urllib.error as _ue
         try:
             cfg = self._app_ref._cfg
             port = cfg.get("omlx_port", 8000)
@@ -1021,29 +1022,54 @@ class _TestPromptHandler(NSObject):
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Bearer {api_key}"},
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                for raw in resp:
-                    line = raw.decode("utf-8", errors="replace").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                        delta = chunk["choices"][0]["delta"].get("content", "")
-                        if delta:
-                            if self._t_first2 is None:
-                                self._t_first2 = time.time()
-                            self._buf2.append(delta)
-                            self._tok_count2 += 1
-                    except Exception:
-                        pass
+            # Retry on 503 — server may still be warming up after load reports done
+            max_retries, delay = 8, 3.0
+            for attempt in range(max_retries):
+                try:
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        for raw in resp:
+                            line = raw.decode("utf-8", errors="replace").strip()
+                            if not line.startswith("data:"):
+                                continue
+                            payload = line[5:].strip()
+                            if payload == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(payload)
+                                delta = chunk["choices"][0]["delta"].get("content", "")
+                                if delta:
+                                    if self._t_first2 is None:
+                                        self._t_first2 = time.time()
+                                    self._buf2.append(delta)
+                                    self._tok_count2 += 1
+                            except Exception:
+                                pass
+                    break  # success
+                except _ue.HTTPError as e:
+                    if e.code == 503 and attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay = min(delay * 1.5, 10.0)
+                    else:
+                        raise
         except Exception as e:
             self._buf2.append(f"\n\n[Error: {e}]")
         finally:
             self._streaming2 = False
             self._t_end2 = time.time()
+
+    def windowWillClose_(self, notification):
+        """Stop timers and release app reference when window is closed."""
+        if self._drain_timer:
+            self._drain_timer.stop()
+            self._drain_timer = None
+        if hasattr(self, '_load_poll_timer') and self._load_poll_timer:
+            self._load_poll_timer.stop()
+            self._load_poll_timer = None
+        app = self._app_ref
+        if app:
+            app._test_prompt_win = None
+            app._test_prompt_handler = None
+        self._app_ref = None
 
 
 def _make_test_prompt_window(app) -> NSWindow:
@@ -1086,14 +1112,23 @@ def _make_test_prompt_window(app) -> NSWindow:
     INPUT_H = 64   # multi-line input height (~4 lines)
     CHK_H = 22     # compare row control height
     ROW2_Y = H - _PAD - INPUT_H - _GAP - CHK_H  # y for second row (checkbox row)
-    cv.addSubview_(_lbl("Prompt:", ((_PAD, H - _PAD - INPUT_H + (INPUT_H - 18) // 2), (_LW, 18)),
-                        right=False))
+    # Autoresizing mask constants
+    _TOP   = 8   # NSViewMinYMargin  — sticks to top
+    _GROW  = 16  # NSViewHeightSizable — grows with window height
+    _WGROW = 2   # NSViewWidthSizable  — grows with window width
+
+    prompt_lbl = _lbl("Prompt:", ((_PAD, H - _PAD - INPUT_H + (INPUT_H - 18) // 2), (_LW, 18)),
+                       right=False)
+    prompt_lbl.setAutoresizingMask_(_TOP)
+    cv.addSubview_(prompt_lbl)
+
     input_scroll = NSScrollView.alloc().initWithFrame_(
         ((_PAD + _LW + _GAP, H - _PAD - INPUT_H),
          (W - _PAD*2 - _LW - _GAP - 70, INPUT_H)))
     input_scroll.setHasVerticalScroller_(True)
     input_scroll.setAutohidesScrollers_(True)
     input_scroll.setBorderType_(2)  # NSBezelBorder
+    input_scroll.setAutoresizingMask_(_TOP | _WGROW)
     input_tv = NSTextView.alloc().initWithFrame_(
         ((0, 0), (W - _PAD*2 - _LW - _GAP - 70, INPUT_H)))
     input_tv.setFont_(NSFont.systemFontOfSize_(13))
@@ -1107,6 +1142,7 @@ def _make_test_prompt_window(app) -> NSWindow:
 
     send_btn = _btn("Send", handler, "send:",
                     ((W - _PAD - 64, H - _PAD - INPUT_H), (64, INPUT_H)), "\r")
+    send_btn.setAutoresizingMask_(_TOP | 1)  # 1=NSViewMinXMargin (right-anchored)
     cv.addSubview_(send_btn)
 
     # Compare checkbox
@@ -1117,12 +1153,14 @@ def _make_test_prompt_window(app) -> NSWindow:
     compare_chk.setState_(0)
     compare_chk.setTarget_(handler)
     compare_chk.setAction_("compareChanged:")
+    compare_chk.setAutoresizingMask_(_TOP)
     cv.addSubview_(compare_chk)
     handler._compare_chk = compare_chk
 
     # Model2 label + popup (hidden by default)
     model2_lbl = _lbl("Model 2:", ((_PAD + 145, ROW2_Y - 3), (70, CHK_H + 6)), right=False)
     model2_lbl.setHidden_(True)
+    model2_lbl.setAutoresizingMask_(_TOP)
     cv.addSubview_(model2_lbl)
     handler._model2_lbl = model2_lbl
 
@@ -1134,6 +1172,7 @@ def _make_test_prompt_window(app) -> NSWindow:
     model2_popup.setTarget_(handler)
     model2_popup.setAction_("model2PopupChanged:")
     model2_popup.setHidden_(True)
+    model2_popup.setAutoresizingMask_(_TOP | _WGROW)
     cv.addSubview_(model2_popup)
     handler._model2_popup = model2_popup
 
@@ -1142,6 +1181,7 @@ def _make_test_prompt_window(app) -> NSWindow:
     sep_y = ROW2_Y - _GAP - 6
     sep = _NSBox.alloc().initWithFrame_(((_PAD, sep_y), (W - _PAD*2, 1)))
     sep.setBoxType_(2)  # NSBoxSeparator
+    sep.setAutoresizingMask_(_TOP | _WGROW)
     cv.addSubview_(sep)
 
     # Model name labels above output panels (hidden until compare is on)
@@ -1150,14 +1190,15 @@ def _make_test_prompt_window(app) -> NSWindow:
     output_h = output_top - BOT - LBL_H - 2
     half_w = (W - _PAD*2 - _GAP) // 2
 
+    from AppKit import NSColor as _NSColorLbl
     model1_lbl = NSTextField.alloc().initWithFrame_(
         ((_PAD, BOT + output_h + 2), (half_w, LBL_H)))
     model1_lbl.setBezeled_(False); model1_lbl.setDrawsBackground_(False)
     model1_lbl.setEditable_(False); model1_lbl.setSelectable_(False)
     model1_lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
-    from AppKit import NSColor as _NSColorLbl
     model1_lbl.setTextColor_(_NSColorLbl.secondaryLabelColor())
     model1_lbl.setStringValue_(app._active or "Model 1")
+    model1_lbl.setAutoresizingMask_(_GROW)   # grows with output area
     cv.addSubview_(model1_lbl)
     handler._model1_lbl = model1_lbl
 
@@ -1169,6 +1210,7 @@ def _make_test_prompt_window(app) -> NSWindow:
     model2_header_lbl.setTextColor_(_NSColorLbl.secondaryLabelColor())
     model2_header_lbl.setStringValue_("Model 2")
     model2_header_lbl.setHidden_(True)
+    model2_header_lbl.setAutoresizingMask_(_GROW)   # grows with output area
     cv.addSubview_(model2_header_lbl)
     handler._model2_header_lbl = model2_header_lbl
 
@@ -1176,6 +1218,7 @@ def _make_test_prompt_window(app) -> NSWindow:
     scroll = NSScrollView.alloc().initWithFrame_(
         ((_PAD, BOT), (half_w, output_h)))
     scroll.setHasVerticalScroller_(True); scroll.setAutohidesScrollers_(True)
+    scroll.setAutoresizingMask_(_GROW | _WGROW)
     tv = NSTextView.alloc().initWithFrame_(((0, 0), (half_w, output_h)))
     tv.setFont_(NSFont.userFixedPitchFontOfSize_(12))
     tv.setTextColor_(_NSColorLbl.labelColor())
@@ -1190,6 +1233,7 @@ def _make_test_prompt_window(app) -> NSWindow:
         ((_PAD + half_w + _GAP // 2, BOT), (1, output_h + LBL_H + 2)))
     vdiv.setBoxType_(2)  # NSBoxSeparator
     vdiv.setHidden_(True)
+    vdiv.setAutoresizingMask_(_GROW | 1 | 4)  # height grows, centered horizontally
     cv.addSubview_(vdiv)
     handler._vdiv = vdiv
 
@@ -1197,6 +1241,7 @@ def _make_test_prompt_window(app) -> NSWindow:
     scroll2 = NSScrollView.alloc().initWithFrame_(
         ((_PAD + half_w + _GAP, BOT), (half_w, output_h)))
     scroll2.setHasVerticalScroller_(True); scroll2.setAutohidesScrollers_(True)
+    scroll2.setAutoresizingMask_(_GROW | _WGROW | 1)  # grows height+width, right side
     tv2 = NSTextView.alloc().initWithFrame_(((0, 0), (half_w, output_h)))
     tv2.setFont_(NSFont.userFixedPitchFontOfSize_(12))
     tv2.setTextColor_(_NSColorLbl.labelColor())
@@ -1287,6 +1332,9 @@ def _make_test_prompt_window(app) -> NSWindow:
     load_poll = rumps.Timer(handler._loadStatusTick_, 0.5)
     load_poll.start()
     handler._load_poll_timer = load_poll
+
+    win.setDelegate_(handler)
+    win.setReleasedWhenClosed_(False)
 
     return win, handler
 
