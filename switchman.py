@@ -727,7 +727,7 @@ def run_settings_panel(cfg: dict) -> bool:
          + _SH + _SG + 4 * (_RH + _RG)            # Paths (4 rows)
          + _DG + _SH + _SG + 3 * (_RH + _RG)      # oMLX (3 rows)
          + _DG + _SH + _SG + 2 * (_RH + _RG) - _RG  # Behavior (2 rows)
-         + _DG + _SH + _SG + 5 * (_RH + _RG)        # Sync (4 checkboxes + script field)
+         + _DG + _SH + _SG + 7 * (_RH + _RG)        # Sync (5 checkboxes + script + HF token)
          + _DG + _BTN_H + _BTN_BOT)
 
     def fy(from_top: int, h: int = _RH) -> int:
@@ -809,10 +809,12 @@ def run_settings_panel(cfg: dict) -> bool:
     cur += _SH + _SG
     sync_chks = {}
     for key, title in [
-        ("notifications",  "macOS notification when model ready"),
-        ("sync_env",       "Write env file (LLM_BASE_URL) on switch"),
-        ("sync_aider",     "Sync ~/.aider.conf.yml on switch"),
-        ("sync_zed",       "Sync ~/.config/zed/settings.json on switch"),
+        ("notifications",      "macOS notification when model ready"),
+        ("auto_reload_on_crash", "Auto-reload model after server crash"),
+        ("sync_env",           "Write env file (LLM_BASE_URL) on switch"),
+        ("sync_aider",         "Sync ~/.aider.conf.yml on switch"),
+        ("sync_zed",           "Sync ~/.config/zed/settings.json on switch"),
+        ("sync_continue",      "Sync ~/.continue/config.json on switch"),
     ]:
         c = NSButton.alloc().initWithFrame_(((x_fld, fy(cur)), (FW, _RH)))
         c.setButtonType_(3)
@@ -826,6 +828,12 @@ def run_settings_panel(cfg: dict) -> bool:
     script_fld = _fld(cfg.get("on_switch_script", ""), ((x_fld, fy(cur)), (FW, _RH)))
     script_fld.setPlaceholderString_("/path/to/script.sh  (env: SWITCHMAN_MODEL, _PORT, _KIND)")
     cv.addSubview_(script_fld)
+    cur += _RH + _RG
+
+    cv.addSubview_(_lbl("HF token:", ((x_lbl, fy(cur)), (_LW, _RH))))
+    hf_token_fld = _fld(cfg.get("hf_token", ""), ((x_fld, fy(cur)), (FW, _RH)))
+    hf_token_fld.setPlaceholderString_("hf_… (for gated models — Llama, Gemma, etc.)")
+    cv.addSubview_(hf_token_fld)
     cur += _RH + _RG
 
     # ── Buttons ──
@@ -855,6 +863,7 @@ def run_settings_panel(cfg: dict) -> bool:
     for key, c in sync_chks.items():
         cfg[key] = bool(c.state())
     cfg["on_switch_script"] = script_fld.stringValue().strip()
+    cfg["hf_token"] = hf_token_fld.stringValue().strip()
     return True
 
 def run_model_settings_panel(cfg: dict, name: str, kind: str) -> bool:
@@ -2167,6 +2176,9 @@ DEFAULTS = {
     "sync_zed":         False,    # write ~/.config/zed/settings.json on switch
     "notifications":    True,     # macOS notification when model is ready
     "on_switch_script": "",       # shell command to run after every model switch
+    "hf_token":         "",       # HuggingFace token for gated model downloads
+    "auto_reload_on_crash": False, # watchdog reloads last model after crash
+    "sync_continue":    False,    # write ~/.continue/config.json on switch
 }
 
 
@@ -2460,7 +2472,7 @@ def omlx_start(cfg: dict) -> bool:
     return False
 
 
-def send_model_ready_notification(name: str) -> None:
+def send_model_ready_notification(name: str, elapsed: float = 0.0) -> None:
     """Fire a local macOS notification via osascript.
 
     UNUserNotificationCenter requires a bundle ID, which a bare Python script
@@ -2470,9 +2482,10 @@ def send_model_ready_notification(name: str) -> None:
     try:
         import subprocess
         safe_name = name.replace('"', '\\"')
+        elapsed_str = f" ({elapsed:.0f}s)" if elapsed > 0 else ""
         subprocess.Popen(
             ["osascript", "-e",
-             f'display notification "Model ready: {safe_name}" with title "Switchman"'],
+             f'display notification "Model ready: {safe_name}{elapsed_str}" with title "Switchman"'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     except Exception:
@@ -2570,6 +2583,25 @@ def run_on_switch_script(script: str, model_name: str, port: int, kind: str) -> 
         pass
 
 
+def sync_continue_config(port: int, model_name: str) -> None:
+    """Write ~/.continue/config.json with current model and API base."""
+    path = Path.home() / ".continue" / "config.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cfg = json.loads(path.read_text()) if path.exists() else {}
+        models = cfg.setdefault("models", [])
+        entry = next((m for m in models if m.get("title") == "Local LLM"), None)
+        if entry is None:
+            entry = {"title": "Local LLM", "provider": "openai"}
+            models.insert(0, entry)
+        entry["apiBase"] = f"http://localhost:{port}/v1"
+        entry["model"] = model_name
+        entry["apiKey"] = "dummy"
+        path.write_text(json.dumps(cfg, indent=2) + "\n")
+    except Exception:
+        pass
+
+
 def sync_clients(cfg: dict, port: int, model_name: str = "", kind: str = "") -> None:
     """Sync all enabled external client configs. Safe to call from any thread."""
     if cfg.get("sync_env", True):
@@ -2578,6 +2610,8 @@ def sync_clients(cfg: dict, port: int, model_name: str = "", kind: str = "") -> 
         sync_aider_config(port, model_name)
     if cfg.get("sync_zed") and model_name:
         sync_zed_config(port, model_name)
+    if cfg.get("sync_continue") and model_name:
+        sync_continue_config(port, model_name)
     if cfg.get("on_switch_script") and model_name:
         run_on_switch_script(cfg["on_switch_script"], model_name, port, kind)
 
@@ -2983,8 +3017,9 @@ class Switchman(rumps.App):
         self._pending_error: tuple | None = None
         # Feature: server crash watchdog
         self._watchdog_timer: rumps.Timer | None = None
-        # Feature: loading step detail
+        # Feature: loading step detail + load time
         self._load_status: str = "Loading model…"
+        self._load_start_time: float = 0.0
         # Switch token — incremented on every new selection; threads check it
         # to detect supersession and exit without clobbering _active/_loading.
         self._switch_token: int = 0
@@ -3200,6 +3235,7 @@ class Switchman(rumps.App):
                 # Server is alive — do nothing
             except Exception:
                 # Server is down
+                crashed_model = self._active
                 self._active = None
                 self._last_toks = None
                 self._stop_tps_poll()
@@ -3208,7 +3244,10 @@ class Switchman(rumps.App):
                     try:
                         content = UNMutableNotificationContent.alloc().init()
                         content.setTitle_("Switchman")
-                        content.setBody_("Inference server stopped unexpectedly")
+                        body = "Inference server stopped unexpectedly"
+                        if self._cfg.get("auto_reload_on_crash") and crashed_model:
+                            body += f" — reloading {crashed_model}…"
+                        content.setBody_(body)
                         req2 = UNNotificationRequest.requestWithIdentifier_content_trigger_(
                             str(uuid.uuid4()), content, None)
                         def _noop(e): pass
@@ -3216,6 +3255,23 @@ class Switchman(rumps.App):
                             .addNotificationRequest_withCompletionHandler_(req2, _noop)
                     except Exception:
                         pass
+                if self._cfg.get("auto_reload_on_crash") and crashed_model \
+                        and crashed_model in self._model_map:
+                    time.sleep(2)   # brief pause before restart
+                    self._switch_token += 1
+                    token = self._switch_token
+                    self._active = crashed_model
+                    self._loading = True
+                    self._rebuild_pending = True
+                    path, kind = self._model_map[crashed_model]
+                    if kind == "mlx":
+                        threading.Thread(
+                            target=self._switch_mlx,
+                            args=(crashed_model, token), daemon=True).start()
+                    else:
+                        threading.Thread(
+                            target=self._switch_gguf,
+                            args=(crashed_model, path, token), daemon=True).start()
         threading.Thread(target=_check, daemon=True).start()
 
     def _on_tps_tick(self, _timer):
@@ -3383,6 +3439,7 @@ class Switchman(rumps.App):
         s.add(None)
         s.add(rumps.MenuItem("  Quick Test Prompt…", callback=self._open_test_prompt))
         s.add(rumps.MenuItem("  Benchmark History…", callback=self._open_bench_history))
+        s.add(rumps.MenuItem("  Server Logs…", callback=self._open_server_logs))
         s.add(None)
         s.add(rumps.MenuItem("  Export Settings…", callback=self._export_settings))
         s.add(rumps.MenuItem("  Import Settings…", callback=self._import_settings))
@@ -3515,6 +3572,7 @@ class Switchman(rumps.App):
         token = self._switch_token
         self._active = name
         self._loading = True
+        self._load_start_time = time.time()
         self._update_title()
         if kind == "mlx":
             threading.Thread(target=self._switch_mlx, args=(name, token), daemon=True).start()
@@ -3595,8 +3653,9 @@ class Switchman(rumps.App):
             sampling=sampling,
         )
         sync_clients(self._cfg, self._cfg.get("omlx_port", 8000), model_name=name, kind="mlx")
+        elapsed = time.time() - self._load_start_time if self._load_start_time else 0.0
         if self._cfg.get("notifications", True):
-            send_model_ready_notification(name)
+            send_model_ready_notification(name, elapsed)
         self._start_poll_on_rebuild = True
         self._loading = False
         if self._cfg["restart_opencode"]:
@@ -3655,8 +3714,9 @@ class Switchman(rumps.App):
             sampling=llama_sampling_params(p),
         )
         sync_clients(self._cfg, self._cfg.get("llama_port", 8000), model_name=model_id, kind="gguf")
+        elapsed = time.time() - self._load_start_time if self._load_start_time else 0.0
         if self._cfg.get("notifications", True):
-            send_model_ready_notification(name)
+            send_model_ready_notification(name, elapsed)
         self._start_poll_on_rebuild = True
         self._loading = False
         if self._cfg["restart_opencode"]:
@@ -4007,6 +4067,15 @@ class Switchman(rumps.App):
             self._test_prompt_win, self._test_prompt_handler = _make_test_prompt_window(self)
             NSApp.activateIgnoringOtherApps_(True)
             self._test_prompt_win.makeKeyAndOrderFront_(None)
+
+    def _open_server_logs(self, _):
+        if hasattr(self, '_log_win') and self._log_win is not None:
+            self._log_win.makeKeyAndOrderFront_(None)
+            NSApp.activateIgnoringOtherApps_(True)
+            return
+        self._log_win = _make_log_window(self)
+        NSApp.activateIgnoringOtherApps_(True)
+        self._log_win.makeKeyAndOrderFront_(None)
 
     def _open_hf_download(self, _):
         if self._hf_download_win is not None:
@@ -4431,11 +4500,13 @@ class _HFDownloadHandler(NSObject):
                 from huggingface_hub import model_info as hf_model_info, hf_hub_url
                 from huggingface_hub.utils import build_hf_headers
 
+                hf_token = self._app_ref._cfg.get("hf_token", "").strip() if self._app_ref else ""
                 ignore = ["*.bin", "*.pt", "original/*"]
 
                 # Fetch file list + sizes
                 try:
-                    info = hf_model_info(repo_id, files_metadata=True)
+                    info = hf_model_info(repo_id, files_metadata=True,
+                                         token=hf_token or None)
                     siblings = info.siblings or []
                 except Exception:
                     siblings = []
@@ -4450,7 +4521,7 @@ class _HFDownloadHandler(NSObject):
                 self._dl_bytes_total = total_bytes
                 self._dl_size_fetched = True
 
-                headers = build_hf_headers()
+                headers = build_hf_headers(token=hf_token or None)
                 model_dir.mkdir(parents=True, exist_ok=True)
 
                 for sib in files:
@@ -4851,6 +4922,74 @@ def _make_hf_download_window(app):
     handler._dl_btn = dl_btn
 
     return win, handler
+
+
+def _make_log_window(app) -> NSWindow:
+    """Open a floating window tailing the oMLX launchd log."""
+    W, H = 700, 420
+    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        ((0, 0), (W, H)), 7, NSBackingStoreBuffered, False)
+    win.setTitle_("Server Logs — oMLX")
+    win.center()
+    _constrain_to_screen(win)
+    win.setTitlebarAppearsTransparent_(True)
+    win.setMovableByWindowBackground_(True)
+    cv = _vibrancy_content_view(win)
+
+    scroll = NSScrollView.alloc().initWithFrame_(
+        ((_PAD, _BTN_BOT + _BTN_H + _PAD), (W - _PAD*2, H - _PAD*2 - _BTN_H - _BTN_BOT)))
+    scroll.setHasVerticalScroller_(True)
+    scroll.setAutohidesScrollers_(True)
+    tv = NSTextView.alloc().initWithFrame_(
+        ((0, 0), (W - _PAD*2, H)))
+    tv.setFont_(NSFont.monospacedSystemFontOfSize_weight_(10.5, 0.0))
+    tv.setEditable_(False)
+    scroll.setDocumentView_(tv)
+    cv.addSubview_(scroll)
+
+    # Close button
+    class _LogDelegate(NSObject):
+        def windowWillClose_(self, notif):
+            if self._timer:
+                self._timer.stop()
+            app._log_win = None
+
+    delegate = _LogDelegate.alloc().init()
+    delegate._timer = None
+    win.setDelegate_(delegate)
+    app._log_delegate = delegate
+
+    cv.addSubview_(_btn("Close", None, None, ((_PAD, _BTN_BOT), (80, _BTN_H))))
+
+    # Tail via log stream — oMLX service logs
+    service = app._cfg.get("omlx_service", "com.jim.omlx")
+
+    def _tail():
+        try:
+            proc = subprocess.Popen(
+                ["log", "stream", "--predicate",
+                 f'subsystem == "{service}" OR process CONTAINS "omlx" OR process CONTAINS "python"',
+                 "--style", "compact"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            delegate._proc = proc
+            for line in proc.stdout:
+                rumps.Timer(lambda _, l=line: _append(l), 0).start()
+        except Exception as e:
+            rumps.Timer(lambda _, m=str(e): _append(f"Error: {m}\n"), 0).start()
+
+    def _append(line: str):
+        cur = tv.string() or ""
+        lines = (cur + line).splitlines(keepends=True)
+        if len(lines) > 500:
+            lines = lines[-500:]
+        tv.setString_("".join(lines))
+        tv.scrollToEndOfDocument_(None)
+
+    threading.Thread(target=_tail, daemon=True).start()
+
+    NSApp.activateIgnoringOtherApps_(True)
+    win.makeKeyAndOrderFront_(None)
+    return win
 
 
 if __name__ == "__main__":
