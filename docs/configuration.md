@@ -4,26 +4,34 @@ Config is stored at `~/.config/switchman/config.json` and edited via **⚙ Setti
 
 ```json
 {
-  "mlx_dir":          "/path/to/models/mlx/",
-  "gguf_dir":         "/path/to/models/gguf/",
-  "omlx_port":        8000,
-  "omlx_api_key":     "",
-  "omlx_service":     "com.yourname.omlx",
-  "llama_server":     "~/.local/llama.cpp/build/bin/llama-server",
-  "llama_port":       8000,
-  "default_model":    "",
-  "notifications":    true,
-  "opencode_config":  "~/.config/opencode/opencode.json",
-  "restart_opencode": false,
-  "terminal_app":     "iTerm2",
-  "sync_cursor":      false,
-  "sync_continue":    false,
-  "sync_env":         true,
-  "aliases":          {},
-  "model_notes":      {},
-  "hidden_models":    [],
-  "model_params":     {},
-  "recent_models":    []
+  "mlx_dir":            "/path/to/models/mlx/",
+  "gguf_dir":           "/path/to/models/gguf/",
+  "omlx_port":          8000,
+  "omlx_api_key":       "",
+  "omlx_service":       "com.yourname.omlx",
+  "llama_server":       "~/.local/llama.cpp/build/bin/llama-server",
+  "llama_port":         8080,
+  "vllm_binary":        "~/.venv-vllm-metal/bin/vllm",
+  "vllm_port":          8001,
+  "vllm_models_dir":    "/path/to/models/mlx/",
+  "vllm_extra_args":    "",
+  "vllm_api_key":       "",
+  "vllm_hf_models":     [],
+  "ollama_host":        "http://localhost:11434",
+  "ollama_api_key":     "",
+  "default_model":      "",
+  "notifications":      true,
+  "opencode_config":    "~/.config/opencode/opencode.json",
+  "restart_opencode":   false,
+  "terminal_app":       "iTerm2",
+  "sync_cursor":        false,
+  "sync_continue":      false,
+  "sync_env":           true,
+  "aliases":            {},
+  "model_notes":        {},
+  "hidden_models":      [],
+  "model_params":       {},
+  "recent_models":      []
 }
 ```
 
@@ -60,6 +68,16 @@ Both directory-based and standalone `.gguf` files are supported:
 
 **Multi-shard models:** only the first shard (`-00001-of-NNNNN`) is shown as a single entry.  
 **Vision projectors:** files containing `mmproj` are skipped.
+
+### vLLM
+
+vLLM (via vllm-metal on Apple Silicon) scans `vllm_models_dir` for HuggingFace-format model directories — the same layout as MLX. Any directory containing `config.json` or `tokenizer_config.json` is listed.
+
+Additional models can be added as HuggingFace model IDs in Settings → Inference → vLLM → HF Model IDs (e.g. `mlx-community/Qwen3-8B-4bit`).
+
+### Ollama
+
+No directory configuration needed. Switchman queries the running Ollama daemon at `ollama_host` and lists all installed models automatically. Install models with `ollama pull <model>`.
 
 ---
 

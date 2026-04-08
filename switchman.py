@@ -564,8 +564,9 @@ class _TestPromptHandler(NSObject):
     def _do_stream(self, prompt):
         try:
             cfg = self._app_ref._cfg
-            port = cfg.get("omlx_port", 8000)
-            api_key = cfg.get("omlx_api_key", "")
+            kind = self._app_ref._model_kind(self._app_ref._active or "")
+            port, api_key = active_api(cfg, kind)
+            base_url = active_base_url(cfg, kind)
             model = self._app_ref._active or ""
             p = self._app_ref._model_params(model) if hasattr(self._app_ref, "_model_params") else {}
             self._prompt_tokens = 0
@@ -582,7 +583,7 @@ class _TestPromptHandler(NSObject):
                 "stream_options": {"include_usage": True},
             }).encode()
             req = urllib.request.Request(
-                f"http://localhost:{port}/v1/chat/completions",
+                f"{base_url}/v1/chat/completions",
                 data=body,
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Bearer {api_key}"},
@@ -1098,11 +1099,12 @@ class _TestPromptHandler(NSObject):
         if not self._app_ref:
             return
         cfg = self._app_ref._cfg
-        port = cfg.get("omlx_port", 8000)
-        api_key = cfg.get("omlx_api_key", "")
         model = self._app_ref._active or ""
         if not model:
             return
+        kind = self._app_ref._model_kind(model)
+        port, api_key = active_api(cfg, kind)
+        base_url = active_base_url(cfg, kind)
         # Show a small status panel while generating
         from AppKit import (NSPanel, NSTextField as _NSTextField2,
                             NSProgressIndicator as _NSPIg)
@@ -1123,9 +1125,9 @@ class _TestPromptHandler(NSObject):
         self._gen_win = gwin
 
         threading.Thread(target=self._do_generate_suggestions,
-                         args=(port, api_key, model, gwin), daemon=True).start()
+                         args=(port, api_key, base_url, model, gwin), daemon=True).start()
 
-    def _do_generate_suggestions(self, port, api_key, model, status_win):
+    def _do_generate_suggestions(self, port, api_key, base_url, model, status_win):
         meta = (
             "Generate exactly 5 diverse, interesting test prompts for evaluating a large language model. "
             "Return ONLY a numbered list (1. ... 2. ... etc.), one prompt per line, no extra commentary. "
@@ -1141,7 +1143,7 @@ class _TestPromptHandler(NSObject):
                 "stream": False,
             }).encode()
             req = urllib.request.Request(
-                f"http://localhost:{port}/v1/chat/completions",
+                f"{base_url}/v1/chat/completions",
                 data=body,
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Bearer {api_key}"},
@@ -1226,8 +1228,9 @@ class _TestPromptHandler(NSObject):
         import urllib.error as _ue
         try:
             cfg = self._app_ref._cfg
-            port = cfg.get("omlx_port", 8000)
-            api_key = cfg.get("omlx_api_key", "")
+            kind2 = self._app_ref._model_kind(model2_name)
+            port, api_key = active_api(cfg, kind2)
+            base_url = active_base_url(cfg, kind2)
             p = self._app_ref._model_params(model2_name) if hasattr(self._app_ref, "_model_params") else {}
             qt_temp = cfg.get("qt_temperature", p.get("temperature", 0.7) if p else 0.7)
             qt_max  = cfg.get("qt_max_tokens",  p.get("max_tokens",  512)  if p else 512)
@@ -1239,7 +1242,7 @@ class _TestPromptHandler(NSObject):
                 "stream": True,
             }).encode()
             req = urllib.request.Request(
-                f"http://localhost:{port}/v1/chat/completions",
+                f"{base_url}/v1/chat/completions",
                 data=body,
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Bearer {api_key}"},
@@ -1279,28 +1282,16 @@ class _TestPromptHandler(NSObject):
             self._streaming2 = False
             self._t_end2 = time.time()
 
-    def windowWillClose_(self, notification):
-        """Stop timers and release app reference when window is closed."""
-        if self._drain_timer:
-            self._drain_timer.stop()
-            self._drain_timer = None
-        if hasattr(self, '_load_poll_timer') and self._load_poll_timer:
-            self._load_poll_timer.stop()
-            self._load_poll_timer = None
-        if getattr(self, '_tok_ctr_timer', None):
-            self._tok_ctr_timer.stop()
-            self._tok_ctr_timer = None
-        app = self._app_ref
-        if app:
-            app._test_prompt_win = None
-            app._test_prompt_handler = None
-        self._app_ref = None
+    def windowShouldClose_(self, sender):
+        """Hide instead of close — avoids dealloc/timer teardown crashes."""
+        sender.orderOut_(None)
+        return False  # prevent NSWindow from actually closing
 
 
 def _make_test_prompt_window(app) -> NSWindow:
     """Build and return the Quick Test Prompt NSWindow (non-modal)."""
-    W, H = 760, 480
-    BOT = 72   # bottom margin: row1=12 (buttons), row2=40 (stats)
+    W, H = 760, 520
+    BOT = 90   # bottom margin: BTN_Y=12 (buttons h=30), STAT_Y=50 (stats h=26)
     win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         ((0, 0), (W, H)), 15, NSBackingStoreBuffered, False)
     win.setTitle_("Quick Test Prompt")
@@ -1560,38 +1551,43 @@ def _make_test_prompt_window(app) -> NSWindow:
     cv.addSubview_(spinner)
     handler._spinner = spinner
 
+    STAT_Y = 52   # stats row y
+    BTN_Y  = 14   # button row y
+    BTN_H  = 28   # button height
+
     tps_lbl = NSTextField.alloc().initWithFrame_(
-        ((_PAD, 40), (half_w, 22)))
+        ((_PAD, STAT_Y), (half_w, 24)))
     tps_lbl.setBezeled_(False); tps_lbl.setDrawsBackground_(False)
     tps_lbl.setEditable_(False)
-    tps_lbl.setFont_(NSFont.systemFontOfSize_(11))
+    tps_lbl.setFont_(NSFont.systemFontOfSize_(12))
     from AppKit import NSColor as _NSColor
     tps_lbl.setTextColor_(_NSColor.secondaryLabelColor())
     cv.addSubview_(tps_lbl)
     handler._tps_lbl = tps_lbl
 
     tps_lbl2 = NSTextField.alloc().initWithFrame_(
-        ((_PAD + half_w + _GAP, 40), (half_w, 22)))
+        ((_PAD + half_w + _GAP, STAT_Y), (half_w, 24)))
     tps_lbl2.setBezeled_(False); tps_lbl2.setDrawsBackground_(False)
     tps_lbl2.setEditable_(False)
-    tps_lbl2.setFont_(NSFont.systemFontOfSize_(11))
+    tps_lbl2.setFont_(NSFont.systemFontOfSize_(12))
     tps_lbl2.setTextColor_(_NSColor.secondaryLabelColor())
     tps_lbl2.setHidden_(True)
     cv.addSubview_(tps_lbl2)
     handler._tps_lbl2 = tps_lbl2
 
     # Bottom-left: Chat toggle + New Conversation
-    chat_chk = NSButton.alloc().initWithFrame_(((_PAD, 12), (68, 22)))
+    chat_chk = NSButton.alloc().initWithFrame_(((_PAD, BTN_Y), (80, BTN_H)))
     chat_chk.setButtonType_(3)
     chat_chk.setTitle_("💬 Chat")
     chat_chk.setState_(0)
     chat_chk.setTarget_(handler)
     chat_chk.setAction_("chatToggled:")
+    chat_chk.setFont_(NSFont.systemFontOfSize_(13))
     cv.addSubview_(chat_chk)
     handler._chat_chk = chat_chk
 
     new_conv_btn = _btn("↺ New", handler, "newConversation:",
-                        ((_PAD + 72, 12), (60, 22)))
+                        ((_PAD + 84, BTN_Y), (64, BTN_H)))
     new_conv_btn.setHidden_(True)
     cv.addSubview_(new_conv_btn)
     handler._new_conv_btn = new_conv_btn
@@ -1621,21 +1617,21 @@ def _make_test_prompt_window(app) -> NSWindow:
     handler._sys_prompt_scroll = sys_prompt_scroll
 
     # Bottom-right button row: Prompts | Export | Copy | − | + | Clear
-    bx = W - _PAD - 64
-    cv.addSubview_(_btn("Clear",  handler, "clear:",       ((bx,      12), (64, 22))))
-    bx -= 28
-    cv.addSubview_(_btn("+",      handler, "fontLarger:",  ((bx,      12), (24, 22))))
-    bx -= 28
-    cv.addSubview_(_btn("−",      handler, "fontSmaller:", ((bx,      12), (24, 22))))
-    bx -= 68
-    cv.addSubview_(_btn("Copy",   handler, "copyResponse:",((bx,      12), (64, 22))))
+    bx = W - _PAD - 68
+    cv.addSubview_(_btn("Clear",  handler, "clear:",        ((bx,     BTN_Y), (68, BTN_H))))
+    bx -= 32
+    cv.addSubview_(_btn("+",      handler, "fontLarger:",   ((bx,     BTN_Y), (28, BTN_H))))
+    bx -= 32
+    cv.addSubview_(_btn("−",      handler, "fontSmaller:",  ((bx,     BTN_Y), (28, BTN_H))))
     bx -= 72
-    cv.addSubview_(_btn("Export", handler, "exportSession:",((bx,     12), (68, 22))))
-    bx -= 96
+    cv.addSubview_(_btn("Copy",   handler, "copyResponse:", ((bx,     BTN_Y), (68, BTN_H))))
+    bx -= 76
+    cv.addSubview_(_btn("Export", handler, "exportSession:",((bx,     BTN_Y), (72, BTN_H))))
+    bx -= 100
 
     # Prompts pull-down button (library + generate)
     from AppKit import NSPopUpButton as _NSPUBp, NSMenuItem as _NSMIp, NSMenu as _NSMenup
-    prompts_btn = _NSPUBp.alloc().initWithFrame_(((bx, 10), (90, 26)))
+    prompts_btn = _NSPUBp.alloc().initWithFrame_(((bx, BTN_Y), (96, BTN_H)))
     prompts_btn.setPullsDown_(True)
     prompts_btn.setTarget_(handler)
     prompts_btn.setBezelStyle_(4)   # rounded
@@ -1890,9 +1886,15 @@ def run_settings_panel_tabbed(cfg: dict) -> bool:
 
     # Paths section
     INF_H = (_SH + _SG
-             + 4 * (_RH + _RG)   # Paths: 4 rows
+             + 4 * (_RH + _RG)           # Paths: 4 rows
              + _DG + _SH + _SG
-             + 3 * (_RH + _RG)   # oMLX: 3 rows
+             + 2 * (_RH + _RG)           # vLLM browse rows (dir + binary)
+             + 3 * (_RH + _RG)           # vLLM text rows (port + api key + extra)
+             + (3 * _RH + _RG) + 14      # vLLM HF model IDs textarea
+             + _DG + _SH + _SG
+             + 2 * (_RH + _RG)           # Ollama: host + api key
+             + _DG + _SH + _SG
+             + 3 * (_RH + _RG)           # oMLX: 3 rows
              + _PAD)
     inf_cv.setFrameSize_((W - _PAD*2 - 32, INF_H))
 
@@ -1913,6 +1915,65 @@ def run_settings_panel_tabbed(cfg: dict) -> bool:
         inf_cv.addSubview_(f)
         inf_cv.addSubview_(_browse_btn(handler, f, is_dir,
                                        ((x_btn, fy_i(cur) - 3), (BW, _RH + 6))))
+        fields[key] = f
+        cur += _RH + _RG
+
+    cur += _DG
+    inf_cv.addSubview_(_lbl("vLLM", ((_PAD, fy_i(cur, _SH)), (W - _PAD*2 - 32 - _PAD, _SH)),
+                            bold=True, right=False))
+    cur += _SH + _SG
+    for key, label, is_dir in [
+        ("vllm_models_dir", "vLLM models dir", True),
+        ("vllm_binary",     "vllm binary",      False),
+    ]:
+        inf_cv.addSubview_(_lbl(label + ":", ((x_lbl, fy_i(cur)), (_LW, _RH))))
+        f = _fld(cfg.get(key, ""), ((x_fld, fy_i(cur)), (FWB, _RH)))
+        inf_cv.addSubview_(f)
+        inf_cv.addSubview_(_browse_btn(handler, f, is_dir,
+                                       ((x_btn, fy_i(cur) - 3), (BW, _RH + 6))))
+        fields[key] = f
+        cur += _RH + _RG
+    for key, label, placeholder in [
+        ("vllm_port",       "Port",       "8001"),
+        ("vllm_api_key",    "API Key",    "sk-… (optional)"),
+        ("vllm_extra_args", "Extra args", "--dtype float16"),
+    ]:
+        inf_cv.addSubview_(_lbl(label + ":", ((x_lbl, fy_i(cur)), (_LW, _RH))))
+        val = str(cfg.get(key, "")) if key == "vllm_port" else cfg.get(key, "")
+        f = _fld(val, ((x_fld, fy_i(cur)), (FW, _RH)))
+        f.setPlaceholderString_(placeholder)
+        inf_cv.addSubview_(f)
+        fields[key] = f
+        cur += _RH + _RG
+    # HF model IDs — one per line
+    hf_ta_h = _RH * 3
+    inf_cv.addSubview_(_lbl("HF model IDs:", ((x_lbl, fy_i(cur, hf_ta_h)), (_LW, hf_ta_h))))
+    from AppKit import NSScrollView as _NSSV2, NSTextView as _NSTV2
+    hf_scroll = _NSSV2.alloc().initWithFrame_(((x_fld, fy_i(cur, hf_ta_h)), (FW, hf_ta_h)))
+    hf_scroll.setHasVerticalScroller_(True); hf_scroll.setBorderType_(2)
+    hf_tv = _NSTV2.alloc().initWithFrame_(((0, 0), (FW, hf_ta_h)))
+    hf_tv.setFont_(NSFont.systemFontOfSize_(11))
+    hf_tv.setString_("\n".join(cfg.get("vllm_hf_models", [])))
+    hf_tv.setRichText_(False)
+    hf_scroll.setDocumentView_(hf_tv)
+    inf_cv.addSubview_(hf_scroll)
+    fields["vllm_hf_tv"] = hf_tv
+    inf_cv.addSubview_(_lbl("one per line", ((x_fld, fy_i(cur, hf_ta_h) - 14), (FW, 12)),
+                            right=False))
+    cur += hf_ta_h + _RG
+
+    cur += _DG
+    inf_cv.addSubview_(_lbl("Ollama", ((_PAD, fy_i(cur, _SH)), (W - _PAD*2 - 32 - _PAD, _SH)),
+                            bold=True, right=False))
+    cur += _SH + _SG
+    for key, label, placeholder in [
+        ("ollama_host",    "Host URL", "http://localhost:11434"),
+        ("ollama_api_key", "API Key",  "(optional, for remote Ollama)"),
+    ]:
+        inf_cv.addSubview_(_lbl(label + ":", ((x_lbl, fy_i(cur)), (_LW, _RH))))
+        f = _fld(cfg.get(key, ""), ((x_fld, fy_i(cur)), (FW, _RH)))
+        f.setPlaceholderString_(placeholder)
+        inf_cv.addSubview_(f)
         fields[key] = f
         cur += _RH + _RG
 
@@ -2088,12 +2149,21 @@ def run_settings_panel_tabbed(cfg: dict) -> bool:
 
     # Read back into cfg
     for key in ("mlx_dir", "gguf_dir", "llama_server", "opencode_config",
-                "omlx_api_key", "omlx_service"):
+                "omlx_api_key", "omlx_service",
+                "vllm_models_dir", "vllm_binary", "vllm_extra_args", "vllm_api_key",
+                "ollama_host", "ollama_api_key"):
         cfg[key] = fields[key].stringValue()
     try:
         cfg["omlx_port"] = int(fields["omlx_port"].stringValue())
     except ValueError:
         pass
+    try:
+        cfg["vllm_port"] = int(fields["vllm_port"].stringValue())
+    except ValueError:
+        pass
+    # HF model IDs — one per line, strip blanks
+    raw_hf = fields["vllm_hf_tv"].string()
+    cfg["vllm_hf_models"] = [l.strip() for l in raw_hf.splitlines() if l.strip()]
     cfg["restart_opencode"] = bool(chk_roc.state())
     cfg["terminal_app"] = term_popup.titleOfSelectedItem()
     for key, c in sync_chks.items():
@@ -2714,8 +2784,8 @@ def run_api_benchmark(cfg: dict, name: str, kind: str,
                       bconfig: BenchmarkConfig) -> list[BenchmarkResult]:
     """Run API benchmarks in background. Returns list of BenchmarkResult."""
     results = []
-    port = cfg.get("omlx_port", 8000)
-    api_key = cfg.get("omlx_api_key", "")
+    port, api_key = active_api(cfg, kind)
+    base_url = active_base_url(cfg, kind)
     headers = {"Content-Type": "application/json",
                "Authorization": f"Bearer {api_key}"}
 
@@ -2769,7 +2839,7 @@ def run_api_benchmark(cfg: dict, name: str, kind: str,
 
                     t0 = time.time()
                     resp = http_post(
-                        f"http://localhost:{port}/v1/chat/completions",
+                        f"{base_url}/v1/chat/completions",
                         body, headers, timeout=300)
                     elapsed_ms = (time.time() - t0) * 1000
 
@@ -2795,7 +2865,7 @@ def run_llama_bench(cfg: dict, name: str, path: str,
                     progress: list | None = None) -> list[BenchmarkResult]:
     """Run llama-bench for a GGUF model. Stops server first."""
     results = []
-    port = cfg.get("omlx_port", 8000)
+    port = cfg.get("llama_port", 8080)
     bench_bin = (Path(cfg.get("llama_server",
                               "~/.local/llama.cpp/build/bin/llama-server"))
                  .expanduser().parent / "llama-bench")
@@ -3687,6 +3757,14 @@ DEFAULTS = {
     "omlx_service":   "com.jim.omlx",
     "llama_server":   str(Path.home() / ".local/llama.cpp/build/bin/llama-server"),
     "llama_port":     8000,
+    "vllm_binary":    str(Path.home() / ".venv-vllm-metal/bin/vllm"),  # vllm-metal on Apple Silicon
+    "vllm_port":      8001,            # default different from omlx/llama
+    "vllm_models_dir": str(Path.home() / "models/vllm/"),
+    "vllm_extra_args": "",             # extra CLI args passed to `vllm serve`
+    "vllm_api_key":   "",              # optional Bearer token for vLLM server
+    "vllm_hf_models": [],             # list of HF model IDs to show in vLLM menu
+    "ollama_host":    "http://localhost:11434",  # Ollama base URL
+    "ollama_api_key": "",             # optional (e.g. for remote Ollama behind auth)
     "opencode_config": str(Path.home() / ".config/opencode/opencode.json"),
     "restart_opencode": False,
     "terminal_app":   "Terminal",   # "Terminal" | "iTerm2"
@@ -3778,6 +3856,59 @@ def scan_gguf(cfg: dict) -> dict[str, Path]:
         if display not in models:
             models[display] = f
     return dict(sorted(models.items()))
+
+
+def scan_vllm(cfg: dict) -> dict[str, Path | str]:
+    """Return vLLM models: local HF dirs + HF model IDs from config.
+
+    Values are either a Path (local) or a str (HF model ID like 'org/name').
+    """
+    models: dict[str, Path | str] = {}
+
+    # Local model directories
+    root = Path(cfg.get("vllm_models_dir", ""))
+    if root.exists():
+        for entry in sorted(root.iterdir()):
+            if entry.is_dir() and not entry.name.startswith("."):
+                if (entry / "config.json").exists() or (entry / "tokenizer_config.json").exists():
+                    models[entry.name] = entry
+
+    # HF model IDs configured manually (e.g. "mistralai/Mistral-7B-Instruct-v0.3")
+    for hf_id in cfg.get("vllm_hf_models", []):
+        if isinstance(hf_id, str) and hf_id.strip():
+            display = hf_id.strip().split("/")[-1]   # use repo name as display
+            models[display] = hf_id.strip()           # str = HF ID
+
+    return models
+
+
+def scan_ollama(cfg: dict) -> dict[str, str]:
+    """Query running Ollama for its installed models.
+
+    Returns {display_name: model_tag} where model_tag is the Ollama model
+    identifier (e.g. 'llama3.2:latest'). Returns {} if Ollama is not running.
+    """
+    host = cfg.get("ollama_host", "http://localhost:11434").rstrip("/")
+    try:
+        import urllib.request as _ur
+        import json as _json
+        req = _ur.Request(f"{host}/api/tags")
+        api_key = cfg.get("ollama_api_key", "")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        with _ur.urlopen(req, timeout=2) as r:
+            data = _json.loads(r.read())
+        models = {}
+        for m in data.get("models", []):
+            tag = m.get("name", "")
+            if not tag:
+                continue
+            # Display: strip ":latest" suffix for cleaner menu names
+            display = tag[:-7] if tag.endswith(":latest") else tag
+            models[display] = tag   # value is full tag used in API calls
+        return dict(sorted(models.items()))
+    except Exception:
+        return {}
 
 
 # ── Model metadata ────────────────────────────────────────────────────────────
@@ -4172,6 +4303,31 @@ def sync_continue_config(port: int, model_name: str) -> None:
         pass
 
 
+def active_api(cfg: dict, kind: str) -> tuple[int, str]:
+    """Return (port, api_key) for the given backend kind."""
+    if kind == "vllm":
+        return cfg.get("vllm_port", 8001), cfg.get("vllm_api_key", "")
+    elif kind == "gguf":
+        return cfg.get("llama_port", 8080), ""
+    elif kind == "ollama":
+        host = cfg.get("ollama_host", "http://localhost:11434")
+        try:
+            port = int(host.rstrip("/").rsplit(":", 1)[-1])
+        except (ValueError, IndexError):
+            port = 11434
+        return port, cfg.get("ollama_api_key", "")
+    else:  # mlx / default
+        return cfg.get("omlx_port", 8000), cfg.get("omlx_api_key", "")
+
+
+def active_base_url(cfg: dict, kind: str) -> str:
+    """Return full base URL (no trailing slash) for the given backend kind."""
+    if kind == "ollama":
+        return cfg.get("ollama_host", "http://localhost:11434").rstrip("/")
+    port, _ = active_api(cfg, kind)
+    return f"http://localhost:{port}"
+
+
 def sync_clients(cfg: dict, port: int, model_name: str = "", kind: str = "") -> None:
     """Sync all enabled external client configs. Safe to call from any thread."""
     if cfg.get("sync_env", True):
@@ -4343,7 +4499,7 @@ class _ModelSearchDelegate(objc.lookUpClass("NSObject")):
         self._filtered: list[str] = []
         self._table = None
         self._panel = None
-        self._engine_filter = "All"   # "All" | "MLX" | "GGUF"
+        self._engine_filter = "All"   # "All" | "MLX" | "GGUF" | "VLLM" | "OLLAMA"
         return self
 
     def setNames_(self, names):
@@ -4444,11 +4600,13 @@ def _open_model_search(app) -> None:
 
     # ── Engine filter (All / MLX / GGUF) ─────────────────────────────────────
     y -= _RG + 24
-    seg = NSSegmentedControl.alloc().initWithFrame_(((_PAD, y), (180, 24)))
-    seg.setSegmentCount_(3)
-    seg.setLabel_("All",  0)
-    seg.setLabel_("MLX",  1)
-    seg.setLabel_("GGUF", 2)
+    seg = NSSegmentedControl.alloc().initWithFrame_(((_PAD, y), (280, 24)))
+    seg.setSegmentCount_(5)
+    seg.setLabel_forSegment_("All",    0)
+    seg.setLabel_forSegment_("MLX",    1)
+    seg.setLabel_forSegment_("GGUF",   2)
+    seg.setLabel_forSegment_("vLLM",   3)
+    seg.setLabel_forSegment_("Ollama", 4)
     seg.setSelectedSegment_(0)
     seg.setSegmentStyle_(1)   # NSSegmentStyleRounded
     cv.addSubview_(seg)
@@ -4524,9 +4682,9 @@ def _open_model_search(app) -> None:
     # ── Segmented control → engine filter ─────────────────────────────────────
     class _SegTarget(objc.lookUpClass("NSObject")):
         def changed_(self, sender):
-            labels = ["All", "MLX", "GGUF"]
+            labels = ["All", "MLX", "GGUF", "VLLM", "OLLAMA"]
             idx = sender.selectedSegment()
-            delegate._engine_filter = labels[idx] if 0 <= idx < 3 else "All"
+            delegate._engine_filter = labels[idx] if 0 <= idx < 5 else "All"
             delegate.applyFilter_(sf.stringValue())
 
     seg_target = _SegTarget.alloc().init()
@@ -4554,6 +4712,55 @@ def _open_model_search(app) -> None:
     panel.makeFirstResponder_(sf)
 
 
+# ── Popover button handler ────────────────────────────────────────────────────
+
+class _PopoverHandler(NSObject):
+    """NSObject target for all NSPopover button actions.
+
+    Needed because Switchman inherits from rumps.App (not NSObject), so its
+    methods cannot be called as ObjC selectors via setTarget_/setAction_.
+    """
+
+    def initWithApp_(self, app):
+        self = super().init()
+        if self is None:
+            return None
+        self._app = app
+        return self
+
+    def popQuickTest_(self, _):
+        self._app._open_test_prompt(None)
+        if getattr(self._app, '_popover', None):
+            self._app._popover.close()
+
+    def popSwitchModel_(self, _):
+        self._app._open_model_search(None)
+        if getattr(self._app, '_popover', None):
+            self._app._popover.close()
+
+    def popBenchmark_(self, _):
+        self._app._on_benchmark(None)
+        if getattr(self._app, '_popover', None):
+            self._app._popover.close()
+
+    def popSettings_(self, _):
+        self._app._open_settings(None)
+        if getattr(self._app, '_popover', None):
+            self._app._popover.close()
+
+    def popLoadRecent_(self, sender):
+        idx = sender.tag()
+        recent = self._app._cfg.get("recent_models", [])
+        if idx < len(recent):
+            name = recent[idx]
+            if name in self._app._model_map:
+                class _S: pass
+                s = _S(); s._model_name = name
+                self._app._on_select(s)
+        if getattr(self._app, '_popover', None):
+            self._app._popover.close()
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 class Switchman(rumps.App):
@@ -4561,6 +4768,7 @@ class Switchman(rumps.App):
         super().__init__("⚡", quit_button=None)
         self._cfg = load_config()
         self._gguf_proc: subprocess.Popen | None = None
+        self._vllm_proc: subprocess.Popen | None = None
         self._active: str | None = None
         self._loading = False
         self._model_map: dict[str, tuple[Path, str]] = {}
@@ -4766,174 +4974,264 @@ class Switchman(rumps.App):
 
     # ── Idle tick (main-thread bridge for background work) ────────────────────
 
-    # ── Menu bar popover (Phase 4–6) ──────────────────────────────────────────
+    # ── Glass Popover ─────────────────────────────────────────────────────────
 
-    def _make_popover_panel(self):
-        """Build the floating popover NSPanel (320×500 pt)."""
+    def _make_popover(self):
+        """Build a native NSPopover with full glass treatment."""
         from AppKit import (
-            NSPanel, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
-            NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered,
+            NSPopover, NSViewController, NSView, NSVisualEffectView,
             NSColor, NSFont, NSTextField, NSButton, NSProgressIndicator,
+            NSBox,
         )
-        from AppKit import NSWindowStyleMaskHUDWindow  # noqa: F401
-        PW, PH = 320, 480
-        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                 NSWindowStyleMaskNonactivatingPanel)
-        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            ((0, 0), (PW, PH)), style, NSBackingStoreBuffered, False)
-        panel.setTitle_("Switchman")
-        panel.setFloatingPanel_(True)
-        panel.setBecomesKeyOnlyIfNeeded_(True)
-        panel.setReleasedWhenClosed_(False)
-        panel.setTitlebarAppearsTransparent_(True)
-        panel.setMovableByWindowBackground_(True)
-        cv = _vibrancy_content_view(panel)
 
-        y = PH - 44
-        def _lbl_pop(text, frame, size=12, bold=False):
+        # Create NSObject handler so button actions can be called as ObjC selectors
+        self._pop_handler = _PopoverHandler.alloc().initWithApp_(self)
+
+        PW = 320
+
+        # ── helpers ──────────────────────────────────────────────────────────
+        def _tf(text, frame, size=12, bold=False, color=None, align=0):
             f = NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size)
-            l = NSTextField.alloc().initWithFrame_(frame)
-            l.setStringValue_(text); l.setBezeled_(False)
-            l.setDrawsBackground_(False); l.setEditable_(False); l.setSelectable_(False)
-            l.setFont_(f); l.setTextColor_(NSColor.labelColor())
-            return l
+            t = NSTextField.alloc().initWithFrame_(frame)
+            t.setStringValue_(text); t.setBezeled_(False)
+            t.setDrawsBackground_(False); t.setEditable_(False); t.setSelectable_(False)
+            t.setFont_(f)
+            t.setTextColor_(color or NSColor.labelColor())
+            t.setAlignment_(align)  # 0=left, 1=right, 2=center
+            return t
 
-        # Active model name (large)
-        model_lbl = _lbl_pop("", ((_PAD, y), (PW - _PAD*2, 22)), size=15, bold=True)
-        model_lbl.setTextColor_(NSColor.labelColor())
-        cv.addSubview_(model_lbl); self._pop_model_lbl = model_lbl
+        def _sep(y):
+            s = NSBox.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
+            s.setBoxType_(2)
+            return s
 
-        y -= 20
-        # Meta row: kind · size · ctx%
-        meta_lbl = _lbl_pop("", ((_PAD, y), (PW - _PAD*2, 16)), size=11)
-        meta_lbl.setTextColor_(NSColor.secondaryLabelColor())
-        cv.addSubview_(meta_lbl); self._pop_meta_lbl = meta_lbl
+        def _glass_card(frame, radius=10):
+            """Rounded frosted card — NSVisualEffectView inside a clipping view."""
+            clip = NSView.alloc().initWithFrame_(frame)
+            clip.setWantsLayer_(True)
+            clip.layer().setCornerRadius_(radius)
+            clip.layer().setMasksToBounds_(True)
+            vfx = NSVisualEffectView.alloc().initWithFrame_(
+                ((0, 0), frame[1]))
+            vfx.setMaterial_(8)   # NSVisualEffectMaterialMenu — denser glass
+            vfx.setBlendingMode_(0)   # NSVisualEffectBlendingModeBehindWindow
+            vfx.setState_(1)      # NSVisualEffectStateActive
+            clip.addSubview_(vfx)
+            return clip, vfx
 
-        y -= 10
-        # Thin separator
-        from AppKit import NSBox as _NSBOX
-        sep1 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
-        sep1.setBoxType_(2); cv.addSubview_(sep1)
+        def _pill_btn(title, target, action, frame, accent=False):
+            b = NSButton.alloc().initWithFrame_(frame)
+            b.setTitle_(title)
+            b.setBezelStyle_(4)   # NSBezelStyleRounded
+            b.setTarget_(target)
+            b.setAction_(action)
+            if accent:
+                b.setKeyEquivalent_("\r")
+            return b
 
-        y -= 18
-        # tok/s label
-        tps_lbl = _lbl_pop("● 0 tok/s", ((_PAD, y), (PW - _PAD*2, 16)), size=11)
-        tps_lbl.setTextColor_(NSColor.secondaryLabelColor())
-        cv.addSubview_(tps_lbl); self._pop_tps_lbl = tps_lbl
+        # ── content view ─────────────────────────────────────────────────────
+        # Calculate total height dynamically
+        HEADER_H  = 90   # dot + model name + meta + tps
+        SPARK_H   = 36
+        STATS_H   = 58   # memory + thermal
+        BTNS_H    = 72   # 2 rows × 32 + gaps
+        RECENT_H  = 18 + 5 * 32   # header + 5 rows
+        PADDING   = _PAD * 2
+        PH = HEADER_H + SPARK_H + STATS_H + BTNS_H + RECENT_H + PADDING + 16
 
-        y -= 28
-        # Spark chart placeholder (NSView — drawn in Phase 5)
-        from AppKit import NSView as _NSV
-        spark_view = _NSV.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 24)))
-        cv.addSubview_(spark_view); self._pop_spark_view = spark_view
-        self._pop_tps_history = []  # filled by _pop_refresh
+        cv = NSView.alloc().initWithFrame_(((0, 0), (PW, PH)))
 
-        y -= 10
-        # Loading progress bar (indeterminate, shown while _loading)
+        y = PH - _PAD
+
+        # ── header card ──────────────────────────────────────────────────────
+        card_h = HEADER_H - 4
+        hdr_card, hdr_vfx = _glass_card(((_PAD, y - card_h), (PW - _PAD*2, card_h)), radius=12)
+        cv.addSubview_(hdr_card)
+
+        # Status dot (green circle via layer)
+        dot_view = NSView.alloc().initWithFrame_(((12, card_h - 18), (10, 10)))
+        dot_view.setWantsLayer_(True)
+        dot_view.layer().setCornerRadius_(5)
+        dot_view.layer().setBackgroundColor_(NSColor.systemGreenColor().CGColor())
+        hdr_vfx.addSubview_(dot_view)
+        self._pop_dot = dot_view
+
+        # Model name — large, bold
+        model_lbl = _tf("", ((26, card_h - 22), (PW - _PAD*2 - 28, 20)),
+                        size=14, bold=True)
+        hdr_vfx.addSubview_(model_lbl); self._pop_model_lbl = model_lbl
+
+        # Meta row
+        meta_lbl = _tf("", ((_PAD - 4, card_h - 38), (PW - _PAD*2 - 8, 14)),
+                        size=10, color=NSColor.secondaryLabelColor())
+        hdr_vfx.addSubview_(meta_lbl); self._pop_meta_lbl = meta_lbl
+
+        # tok/s
+        tps_lbl = _tf("", ((_PAD - 4, card_h - 54), (PW - _PAD*2 - 8, 13)),
+                      size=10, color=NSColor.secondaryLabelColor())
+        hdr_vfx.addSubview_(tps_lbl); self._pop_tps_lbl = tps_lbl
+
+        # Indeterminate load bar inside header card (hidden by default)
         load_bar = NSProgressIndicator.alloc().initWithFrame_(
-            ((_PAD, y), (PW - _PAD*2, 8)))
-        load_bar.setStyle_(0)  # bar
-        load_bar.setIndeterminate_(True)
+            ((8, 4), (PW - _PAD*2 - 16, 4)))
+        load_bar.setStyle_(0); load_bar.setIndeterminate_(True)
+        load_bar.setControlSize_(3)   # NSControlSizeMini
         load_bar.setHidden_(True)
-        cv.addSubview_(load_bar); self._pop_load_bar = load_bar
-        y -= 10
+        hdr_vfx.addSubview_(load_bar); self._pop_load_bar = load_bar
 
-        sep2 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
-        sep2.setBoxType_(2); cv.addSubview_(sep2)
+        y -= card_h + 8
 
-        y -= 22
-        # Memory pressure bar label + progress bar
-        mem_lbl = _lbl_pop("🟢 Memory", ((_PAD, y), (80, 16)), size=11)
-        cv.addSubview_(mem_lbl); self._pop_mem_lbl = mem_lbl
+        # ── spark chart card ─────────────────────────────────────────────────
+        spark_card, spark_vfx = _glass_card(((_PAD, y - SPARK_H), (PW - _PAD*2, SPARK_H)), radius=10)
+        cv.addSubview_(spark_card)
+
+        spark_lbl = _tf("TOK/S", ((8, SPARK_H - 13), (40, 11)),
+                        size=8, bold=True, color=NSColor.tertiaryLabelColor())
+        spark_vfx.addSubview_(spark_lbl)
+
+        spark_inner = NSView.alloc().initWithFrame_(((50, 6), (PW - _PAD*2 - 58, SPARK_H - 12)))
+        spark_vfx.addSubview_(spark_inner)
+        self._pop_spark_view = spark_inner
+        self._pop_tps_history = []
+
+        y -= SPARK_H + 6
+
+        # ── stats card (memory + thermal) ────────────────────────────────────
+        stats_card, stats_vfx = _glass_card(((_PAD, y - STATS_H), (PW - _PAD*2, STATS_H)), radius=10)
+        cv.addSubview_(stats_card)
+
+        # Memory row  — "🟢 Memory" label (left) + bar (center) + pct (right)
+        cw = PW - _PAD*2   # card interior width = 304
+        mem_lbl = _tf("🟢 Memory", ((8, STATS_H - 18), (90, 14)),
+                      size=10, color=NSColor.secondaryLabelColor())
+        stats_vfx.addSubview_(mem_lbl); self._pop_mem_lbl = mem_lbl
 
         mem_bar = NSProgressIndicator.alloc().initWithFrame_(
-            ((_PAD + 84, y + 1), (PW - _PAD*2 - 84 - 44, 14)))
-        mem_bar.setStyle_(0)  # bar
-        mem_bar.setIndeterminate_(False)
+            ((104, STATS_H - 14), (cw - 104 - 36, 6)))
+        mem_bar.setStyle_(0); mem_bar.setIndeterminate_(False)
+        mem_bar.setControlSize_(3)
         mem_bar.setMinValue_(0); mem_bar.setMaxValue_(100)
         mem_bar.setDoubleValue_(0)
-        cv.addSubview_(mem_bar); self._pop_mem_bar = mem_bar
+        stats_vfx.addSubview_(mem_bar); self._pop_mem_bar = mem_bar
 
-        mem_pct_lbl = _lbl_pop("0%", ((PW - _PAD - 40, y), (40, 16)), size=11)
-        mem_pct_lbl.setTextColor_(NSColor.secondaryLabelColor())
-        cv.addSubview_(mem_pct_lbl); self._pop_mem_pct_lbl = mem_pct_lbl
+        mem_pct_lbl = _tf("0%", ((cw - 32, STATS_H - 18), (30, 14)),
+                          size=10, color=NSColor.secondaryLabelColor(), align=2)
+        stats_vfx.addSubview_(mem_pct_lbl); self._pop_mem_pct_lbl = mem_pct_lbl
 
-        y -= 22
-        # Thermal state
-        thermal_lbl = _lbl_pop("🌡 Thermal  Nominal", ((_PAD, y), (PW - _PAD*2, 16)), size=11)
-        thermal_lbl.setTextColor_(NSColor.secondaryLabelColor())
-        cv.addSubview_(thermal_lbl); self._pop_thermal_lbl = thermal_lbl
+        # Thermal row — full-width label
+        thermal_val = _tf("🌡 Thermal  Nominal", ((8, STATS_H - 36), (cw - 8, 14)),
+                          size=10, color=NSColor.secondaryLabelColor())
+        stats_vfx.addSubview_(thermal_val); self._pop_thermal_lbl = thermal_val
 
-        y -= 14
-        sep3 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
-        sep3.setBoxType_(2); cv.addSubview_(sep3)
+        y -= STATS_H + 8
 
-        y -= 32
-        # Primary action buttons row 1
-        bw = (PW - _PAD*2 - _GAP) // 2
-        btn_qt = _btn("💬 Quick Test", self, "popQuickTest:",
-                      ((_PAD, y), (bw, 26)))
-        cv.addSubview_(btn_qt)
-        btn_sw = _btn("⇄ Switch Model", self, "popSwitchModel:",
-                      ((_PAD + bw + _GAP, y), (bw, 26)))
-        cv.addSubview_(btn_sw)
+        # ── action buttons ────────────────────────────────────────────────────
+        bw = (PW - _PAD*2 - 8) // 2
+        _ph = self._pop_handler
+        for i, (title, method_fn, is_accent) in enumerate([
+            ("💬 Quick Test",   _ph.popQuickTest_,   True),
+            ("⇄ Switch Model", _ph.popSwitchModel_, False),
+            ("⏱ Benchmark",    _ph.popBenchmark_,   False),
+            ("⚙ Settings",     _ph.popSettings_,    False),
+        ]):
+            row = i // 2
+            col = i % 2
+            bx = _PAD + col * (bw + 8)
+            by = y - (row + 1) * 32 - row * 6
+            b = _pill_btn(title, _ph, objc.selector(method_fn, signature=b"v@:@"),
+                          ((bx, by), (bw, 28)), accent=is_accent)
+            cv.addSubview_(b)
 
-        y -= 32
-        # Row 2
-        btn_bm = _btn("⏱ Benchmark", self, "popBenchmark:",
-                      ((_PAD, y), (bw, 26)))
-        cv.addSubview_(btn_bm)
-        btn_st = _btn("⚙ Settings", self, "popSettings:",
-                      ((_PAD + bw + _GAP, y), (bw, 26)))
-        cv.addSubview_(btn_st)
+        y -= BTNS_H
 
-        y -= 16
-        sep4 = _NSBOX.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 1)))
-        sep4.setBoxType_(2); cv.addSubview_(sep4)
+        # ── recent models ─────────────────────────────────────────────────────
+        cv.addSubview_(_tf("RECENT", ((_PAD, y - 14), (80, 11)),
+                           size=8, bold=True, color=NSColor.tertiaryLabelColor()))
+        y -= 18
 
-        y -= 22
-        recent_hdr = _lbl_pop("RECENT", ((_PAD, y), (PW - _PAD*2, 14)), size=10)
-        recent_hdr.setTextColor_(NSColor.tertiaryLabelColor())
-        cv.addSubview_(recent_hdr)
-
-        y -= 4
-        # Recent model list (up to 5 one-click switch buttons)
         self._pop_recent_btns = []
         for i in range(5):
-            y -= 28
-            rb = NSButton.alloc().initWithFrame_(((_PAD, y), (PW - _PAD*2, 24)))
-            rb.setTitle_("")
-            rb.setBezelStyle_(4)
-            rb.setTarget_(self)
-            rb.setAction_("popLoadRecent:")
-            rb.setHidden_(True)
-            rb.setTag_(i)
-            cv.addSubview_(rb)
-            self._pop_recent_btns.append(rb)
+            row_card, row_vfx = _glass_card(((_PAD, y - 28), (PW - _PAD*2, 28)), radius=8)
+            cv.addSubview_(row_card)
 
-        self._popover_panel = panel
-        return panel
+            name_lbl = _tf("", ((10, 7), (PW - _PAD*2 - 100, 14)),
+                           size=11, color=NSColor.labelColor())
+            row_vfx.addSubview_(name_lbl)
+
+            kind_lbl = _tf("", ((PW - _PAD*2 - 90, 7), (80, 14)),
+                           size=9, color=NSColor.secondaryLabelColor(), align=2)
+            row_vfx.addSubview_(kind_lbl)
+
+            # invisible button over the whole card
+            tap = NSButton.alloc().initWithFrame_(((0, 0), (PW - _PAD*2, 28)))
+            tap.setTitle_(""); tap.setBordered_(False)
+            tap.setTarget_(self._pop_handler)
+            tap.setAction_(objc.selector(self._pop_handler.popLoadRecent_, signature=b"v@:@"))
+            tap.setTag_(i)
+            row_vfx.addSubview_(tap)
+
+            row_card.setHidden_(True)
+            self._pop_recent_btns.append((row_card, name_lbl, kind_lbl, tap))
+            y -= 32
+
+        # ── wire into NSPopover ───────────────────────────────────────────────
+        vc = NSViewController.alloc().init()
+        vc.setView_(cv)
+
+        popover = NSPopover.alloc().init()
+        popover.setContentViewController_(vc)
+        popover.setContentSize_((PW, PH))
+        popover.setBehavior_(1)   # NSPopoverBehaviorTransient — closes on click outside
+        popover.setAnimates_(True)
+
+        self._popover = popover
+        self._pop_vc  = vc        # keep alive
+        return popover
 
     def _open_popover(self, _=None):
-        """Show/hide the custom popover panel anchored near the menu bar."""
-        if not hasattr(self, '_popover_panel') or self._popover_panel is None:
-            self._make_popover_panel()
-        panel = self._popover_panel
-        if panel.isVisible():
-            panel.orderOut_(None)
+        """Toggle the glass popover anchored to the status bar button."""
+        if not getattr(self, '_popover', None):
+            self._make_popover()
+
+        popover = self._popover
+        if popover.isShown():
+            popover.close()
             return
+
         self._pop_refresh()
-        # Position below the status bar item
-        from AppKit import NSScreen
-        screen_h = NSScreen.mainScreen().frame().size.height
-        menu_bar_h = NSScreen.mainScreen().visibleFrame().origin.y + NSScreen.mainScreen().visibleFrame().size.height
-        # Rough position: top-right area
-        pw = panel.frame().size.width
-        ph = panel.frame().size.height
-        sx = NSScreen.mainScreen().frame().size.width - pw - 20
-        sy = menu_bar_h - ph - 4
-        panel.setFrameOrigin_((sx, sy))
-        panel.makeKeyAndOrderFront_(None)
+
+        # Get the status bar button to anchor to.
+        # SwitchmanApp inherits from rumps.App so self._status_item IS the NSStatusItem.
+        btn = None
+        try:
+            from AppKit import NSRectEdgeMaxY
+            si = getattr(self, '_status_item', None)
+            if si is not None:
+                btn = si.button()
+        except Exception:
+            btn = None
+        if btn:
+            popover.showRelativeToRect_ofView_preferredEdge_(
+                btn.bounds(), btn, NSRectEdgeMaxY)
+        else:
+            # Fallback: use a dummy NSView anchored to screen top-right
+            try:
+                from AppKit import NSScreen, NSView, NSRectEdgeMaxY as _EDGE
+                PW, PH = int(popover.contentSize().width), int(popover.contentSize().height)
+                vf = NSScreen.mainScreen().frame()
+                # Place anchor 1pt square at top-right of screen
+                dummy = NSView.alloc().initWithFrame_(((vf.size.width - PW - 8, vf.size.height - 1), (1, 1)))
+                # Must have a window — use content view of a temp panel trick:
+                # Instead fall back to showing relative to main window content view
+                from AppKit import NSApp
+                mw = NSApp.mainWindow() or (NSApp.windows()[0] if NSApp.windows() else None)
+                if mw:
+                    cv = mw.contentView()
+                    popover.showRelativeToRect_ofView_preferredEdge_(
+                        cv.bounds(), cv, _EDGE)
+            except Exception as e:
+                print(f"[popover fallback error] {e}")
+
         # Start refresh timer
         if not getattr(self, '_pop_timer', None):
             self._pop_timer = rumps.Timer(self._pop_tick_, 2.0)
@@ -4994,14 +5292,14 @@ class Switchman(rumps.App):
             self._pop_model_lbl.setStringValue_("No model loaded")
             self._pop_meta_lbl.setStringValue_("")
 
-        # Memory bar
+        # Memory row
         mem_dot = "🔴" if self._mem_pressure == "critical" else ("🟡" if self._mem_pressure == "fair" else "🟢")
         self._pop_mem_lbl.setStringValue_(f"{mem_dot} Memory")
         self._pop_mem_bar.setDoubleValue_(mem_pct)
         self._pop_mem_pct_lbl.setStringValue_(f"{mem_pct}%")
 
-        # Thermal
-        thermal_map = {"nominal": "Nominal", "fair": "Fair ⚠", "serious": "Serious ⚠⚠", "critical": "Critical 🔥"}
+        # Thermal row
+        thermal_map = {"nominal": "Nominal ✓", "fair": "Fair ⚠", "serious": "Serious ⚠⚠", "critical": "Critical 🔥"}
         thermal_str = thermal_map.get(self._thermal_state, self._thermal_state.title())
         self._pop_thermal_lbl.setStringValue_(f"🌡 Thermal  {thermal_str}")
 
@@ -5019,23 +5317,25 @@ class Switchman(rumps.App):
         if hasattr(self, '_pop_spark_view'):
             _update_spark_chart(self._pop_spark_view, self._pop_tps_history)
 
-        # Recent models
+        # Recent models — _pop_recent_btns is list of (row_card, name_lbl, kind_lbl, tap)
         recent = self._cfg.get("recent_models", [])
-        for i, rb in enumerate(self._pop_recent_btns):
+        for i, row_tuple in enumerate(self._pop_recent_btns):
+            row_card, name_lbl, kind_lbl, tap = row_tuple
             if i < len(recent):
                 name = recent[i]
                 display = self._display(name)
                 if len(display) > 38:
                     display = display[:36] + "…"
-                rb.setTitle_(display)
-                rb.setHidden_(False)
-                rb.setTag_(i)
+                name_lbl.setStringValue_(display)
+                kind_lbl.setStringValue_(self._model_kind(name).upper())
+                tap.setTag_(i)
+                row_card.setHidden_(False)
             else:
-                rb.setHidden_(True)
+                row_card.setHidden_(True)
 
     def _pop_tick_(self, timer):
         """Refresh popover every 2s (every 0.5s while loading)."""
-        if not hasattr(self, '_popover_panel') or not self._popover_panel.isVisible():
+        if not getattr(self, '_popover', None) or not self._popover.isShown():
             timer.stop()
             self._pop_timer = None
             return
@@ -5046,38 +5346,6 @@ class Switchman(rumps.App):
             self._pop_timer = rumps.Timer(self._pop_tick_, target_interval)
             self._pop_timer.start()
         self._pop_refresh()
-
-    def popQuickTest_(self, _):
-        self._open_test_prompt(None)
-        if hasattr(self, '_popover_panel'):
-            self._popover_panel.orderOut_(None)
-
-    def popSwitchModel_(self, _):
-        self._open_search(None)
-        if hasattr(self, '_popover_panel'):
-            self._popover_panel.orderOut_(None)
-
-    def popBenchmark_(self, _):
-        self._open_bench(None)
-        if hasattr(self, '_popover_panel'):
-            self._popover_panel.orderOut_(None)
-
-    def popSettings_(self, _):
-        self._open_settings(None)
-        if hasattr(self, '_popover_panel'):
-            self._popover_panel.orderOut_(None)
-
-    def popLoadRecent_(self, sender):
-        idx = sender.tag()
-        recent = self._cfg.get("recent_models", [])
-        if idx < len(recent):
-            name = recent[idx]
-            if name in self._model_map:
-                class _S: pass
-                s = _S(); s._model_name = name
-                self._on_select(s)
-        if hasattr(self, '_popover_panel'):
-            self._popover_panel.orderOut_(None)
 
     def _on_idle_tick(self, _timer):
         # Request notification permission once, on the first idle tick after the
@@ -5156,10 +5424,15 @@ class Switchman(rumps.App):
             return
         def _check():
             try:
-                port = self._cfg.get("omlx_port", 8000)
-                api_key = self._cfg.get("omlx_api_key", "")
+                kind = self._model_kind(self._active or "")
+                port, api_key = active_api(self._cfg, kind)
+                base = active_base_url(self._cfg, kind)
+                # For vLLM: also check if the process itself died
+                if kind == "vllm" and getattr(self, '_vllm_proc', None):
+                    if self._vllm_proc.poll() is not None:
+                        raise RuntimeError("vllm process exited")
                 req = urllib.request.Request(
-                    f"http://localhost:{port}/health",
+                    f"{base}/health",
                     headers={"Authorization": f"Bearer {api_key}"})
                 with urllib.request.urlopen(req, timeout=5) as r:
                     r.read()
@@ -5216,14 +5489,20 @@ class Switchman(rumps.App):
 
         mlx = scan_mlx(self._cfg)
         gguf = scan_gguf(self._cfg)
+        vllm_models = scan_vllm(self._cfg)
+        ollama_models = scan_ollama(self._cfg)
         self._model_map = {
             **{n: (p, "mlx") for n, p in mlx.items()},
             **{n: (p, "gguf") for n, p in gguf.items()},
+            **{n: (p, "vllm") for n, p in vllm_models.items()},
+            **{n: (tag, "ollama") for n, tag in ollama_models.items()},
         }
 
         hidden = set(self._cfg["hidden_models"])
-        mlx_visible  = {n: p for n, p in mlx.items()  if n not in hidden}
-        gguf_visible = {n: p for n, p in gguf.items() if n not in hidden}
+        mlx_visible    = {n: p for n, p in mlx.items()         if n not in hidden}
+        gguf_visible   = {n: p for n, p in gguf.items()        if n not in hidden}
+        vllm_visible   = {n: p for n, p in vllm_models.items() if n not in hidden}
+        ollama_visible = {n: t for n, t in ollama_models.items() if n not in hidden}
         hidden_present = {n for n in hidden if n in self._model_map}
 
         if self._loading and self._active:
@@ -5270,7 +5549,19 @@ class Switchman(rumps.App):
                 menu.append(self._make_model_item(name))
             menu.append(None)
 
-        if not mlx_visible and not gguf_visible and not hidden_present:
+        if vllm_visible:
+            menu.append(_menu_header("── vLLM ──"))
+            for name in vllm_visible:
+                menu.append(self._make_model_item(name))
+            menu.append(None)
+
+        if ollama_visible:
+            menu.append(_menu_header("── Ollama ──"))
+            for name in ollama_visible:
+                menu.append(self._make_model_item(name))
+            menu.append(None)
+
+        if not mlx_visible and not gguf_visible and not vllm_visible and not ollama_visible and not hidden_present:
             menu.append(rumps.MenuItem("No models found", callback=None))
             menu.append(None)
 
@@ -5389,7 +5680,8 @@ class Switchman(rumps.App):
         s.add(rumps.MenuItem("  Export Settings…", callback=self._export_settings))
         s.add(rumps.MenuItem("  Import Settings…", callback=self._import_settings))
         s.add(None)
-        port = self._cfg.get("omlx_port", 8000)
+        kind = self._model_kind(self._active) if self._active else "mlx"
+        port, _ = active_api(self._cfg, kind)
         copy_item = _sf_item(f"Copy API URL  (:{port}/v1)", "link.circle", self._copy_api_url)
         s.add(copy_item)
         return s
@@ -5533,6 +5825,11 @@ class Switchman(rumps.App):
         self._update_title()
         if kind == "mlx":
             threading.Thread(target=self._switch_mlx, args=(name, token), daemon=True).start()
+        elif kind == "vllm":
+            threading.Thread(target=self._switch_vllm, args=(name, path, token), daemon=True).start()
+        elif kind == "ollama":
+            # path is the Ollama model tag string (e.g. "llama3.2:latest")
+            threading.Thread(target=self._switch_ollama, args=(name, str(path), token), daemon=True).start()
         else:
             threading.Thread(target=self._switch_gguf, args=(name, path, token), daemon=True).start()
 
@@ -5702,12 +5999,126 @@ class Switchman(rumps.App):
             return None
 
     def _do_stop(self):
+        # Unload Ollama model from memory if one is active
+        if self._active and self._model_kind(self._active) == "ollama":
+            entry = self._model_map.get(self._active)
+            if entry:
+                self._unload_ollama(str(entry[0]))
         self._kill_gguf()
+        self._kill_vllm()
         omlx_stop(self._cfg)
         self._active = None
         self._loading = False
         self._stop_tps_poll()
         self._stop_watchdog()
+        self._rebuild_pending = True
+
+    def _unload_ollama(self, model_tag: str):
+        """Ask Ollama to evict a model from memory (keep_alive=0)."""
+        host = self._cfg.get("ollama_host", "http://localhost:11434").rstrip("/")
+        api_key = self._cfg.get("ollama_api_key", "")
+        try:
+            import json as _json
+            body = _json.dumps({"model": model_tag, "keep_alive": 0}).encode()
+            req = urllib.request.Request(
+                f"{host}/api/generate", data=body,
+                headers={"Content-Type": "application/json"})
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
+            with urllib.request.urlopen(req, timeout=5):
+                pass
+        except Exception:
+            pass
+
+    def _switch_ollama(self, name: str, model_tag: str, token: int):
+        """Switch to an Ollama model — no process management needed.
+
+        Ollama is a system service; we just warm it up with the new model.
+        """
+        self._load_status = "Checking Ollama…"
+
+        # Unload any currently active Ollama model to free memory first
+        if self._active and self._model_kind(self._active) == "ollama":
+            entry = self._model_map.get(self._active)
+            if entry:
+                self._unload_ollama(str(entry[0]))
+
+        # Stop non-Ollama engines
+        self._kill_gguf()
+        self._kill_vllm()
+        omlx_stop(self._cfg)
+        if self._superseded(token):
+            return
+
+        host = self._cfg.get("ollama_host", "http://localhost:11434").rstrip("/")
+        api_key = self._cfg.get("ollama_api_key", "")
+
+        # Verify Ollama is running
+        try:
+            req = urllib.request.Request(f"{host}/api/tags")
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
+            with urllib.request.urlopen(req, timeout=5):
+                pass
+        except Exception:
+            if self._superseded(token):
+                return
+            self._active = None
+            self._pending_error = (
+                "Ollama not reachable",
+                f"Could not connect to Ollama at {host}.\n\n"
+                "Make sure Ollama is installed and running:\n  ollama serve",
+            )
+            self._loading = False
+            self._rebuild_pending = True
+            return
+
+        if self._superseded(token):
+            return
+
+        # Warm up: send a minimal request to trigger model load
+        self._load_status = "Loading model…"
+        import json as _json
+        body = _json.dumps({
+            "model": model_tag,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+            "stream": False,
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            req = urllib.request.Request(
+                f"{host}/v1/chat/completions", data=body, headers=headers)
+            with urllib.request.urlopen(req, timeout=300) as r:
+                r.read()
+        except Exception as e:
+            if self._superseded(token):
+                return
+            self._active = None
+            self._pending_error = (
+                "Ollama model failed to load",
+                f"Model '{model_tag}' could not be loaded.\n\n"
+                f"Try: ollama pull {model_tag}\n\nError: {e}",
+            )
+            self._loading = False
+            self._rebuild_pending = True
+            return
+
+        if self._superseded(token):
+            return
+
+        p = self._params(name)
+        sync_clients(self._cfg, 11434, model_name=model_tag, kind="ollama")
+        elapsed = time.time() - self._load_start_time if self._load_start_time else 0.0
+        record_model_load_time(self._cfg, name, elapsed)
+        if self._cfg.get("notifications", True):
+            send_model_ready_notification(name, elapsed)
+        self._start_poll_on_rebuild = True
+        self._loading = False
+        if self._cfg["restart_opencode"]:
+            restart_opencode(self._cfg)
         self._rebuild_pending = True
 
     def _kill_gguf(self):
@@ -5718,6 +6129,106 @@ class Switchman(rumps.App):
             except subprocess.TimeoutExpired:
                 self._gguf_proc.kill()
         self._gguf_proc = None
+
+    def _kill_vllm(self):
+        if getattr(self, '_vllm_proc', None) and self._vllm_proc.poll() is None:
+            self._vllm_proc.terminate()
+            try:
+                self._vllm_proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                self._vllm_proc.kill()
+        self._vllm_proc = None
+
+    def _switch_vllm(self, name: str, path, token: int):
+        """Stop other engines, start vllm serve, wait for readiness.
+
+        path may be a pathlib.Path (local model dir) or a str (HF model ID).
+        """
+        self._load_status = "Stopping engine…"
+        self._kill_gguf()
+        self._kill_vllm()
+        omlx_stop(self._cfg)
+        if self._superseded(token):
+            return
+
+        port = self._cfg.get("vllm_port", 8001)
+        if not port_is_free(port):
+            kill_port(port)
+
+        if self._superseded(token):
+            return
+
+        self._load_status = "Starting vLLM…"
+        binary = self._cfg.get("vllm_binary", "vllm")
+        extra = self._cfg.get("vllm_extra_args", "").split()
+        p = self._params(name)
+        # path is str (HF model ID) or Path (local dir)
+        model_arg = str(path)
+        cmd = [
+            binary, "serve", model_arg,
+            "--port", str(port),
+            "--served-model-name", name,   # so API model ID matches Switchman name
+            "--max-model-len", str(p.get("context", 4096)),
+        ] + extra
+
+        try:
+            self._vllm_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            if self._superseded(token):
+                return
+            self._active = None
+            self._pending_error = (
+                "vLLM not found",
+                f"Could not launch '{binary}'. Set the vLLM binary path in Settings → Inference.",
+            )
+            self._loading = False
+            self._rebuild_pending = True
+            return
+
+        self._load_status = "Loading weights…"
+        if not wait_for_port_open(port, timeout=300):
+            if self._superseded(token):
+                return
+            self._active = None
+            self._pending_error = (
+                "vLLM failed to start",
+                f"Port {port} did not open within 5 minutes.",
+            )
+            self._loading = False
+            self._rebuild_pending = True
+            return
+
+        if self._superseded(token):
+            return
+
+        # Query the loaded model ID from /v1/models
+        model_id = name
+        try:
+            import urllib.request as _ur
+            import json as _json
+            with _ur.urlopen(f"http://localhost:{port}/v1/models", timeout=10) as r:
+                data = _json.loads(r.read())
+                ids = [m["id"] for m in data.get("data", [])]
+                if ids:
+                    model_id = ids[0]
+        except Exception:
+            pass
+
+        sync_clients(self._cfg, port, model_name=model_id, kind="vllm")
+        elapsed = time.time() - self._load_start_time if self._load_start_time else 0.0
+        record_model_load_time(self._cfg, name, elapsed)
+        if self._cfg.get("notifications", True):
+            send_model_ready_notification(name, elapsed)
+        self._start_poll_on_rebuild = True
+        self._loading = False
+        if self._cfg["restart_opencode"]:
+            restart_opencode(self._cfg)
+        self._rebuild_pending = True
 
     # ── Startup sync ──────────────────────────────────────────────────────────
 
@@ -5813,7 +6324,8 @@ class Switchman(rumps.App):
 
     def _copy_api_url(self, _):
         from AppKit import NSPasteboard, NSStringPboardType
-        port = self._cfg.get("omlx_port", 8000)
+        kind = self._model_kind(self._active) if self._active else "mlx"
+        port, _ = active_api(self._cfg, kind)
         url = f"http://localhost:{port}/v1"
         pb = NSPasteboard.generalPasteboard()
         pb.clearContents()

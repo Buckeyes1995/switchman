@@ -7,7 +7,7 @@
 
 A macOS menu bar app for managing local LLM inference. Pick a model, it loads — no terminal, no config files, no fuss.
 
-Supports **MLX** models via [oMLX](https://github.com/jmorganca/omlx) (Apple Silicon) and **GGUF** models via [llama.cpp](https://github.com/ggerganov/llama.cpp). Built with Python + rumps + PyObjC — no Electron, no web views, no cloud.
+Supports **MLX** models via [oMLX](https://github.com/jmorganca/omlx) (Apple Silicon), **GGUF** models via [llama.cpp](https://github.com/ggerganov/llama.cpp), **vLLM** via [vllm-metal](https://github.com/vllm-project/vllm-metal) (Apple Silicon Metal backend), and **Ollama** (any locally running Ollama instance). Built with Python + rumps + PyObjC — no Electron, no web views, no cloud.
 
 > Tested on M2 Max (96 GB), macOS 15. Apple Silicon required for MLX; GGUF works on any Mac.
 
@@ -19,7 +19,7 @@ Most local LLM tools are either full desktop apps (LM Studio, Ollama Desktop) or
 
 - **No web browser required** — everything is a native macOS panel
 - **No Electron, no Node, no web server** — pure Python + PyObjC, ~15 MB installed
-- **Unified MLX + GGUF** — both backends in one menu, same interface
+- **Four backends in one menu** — MLX, GGUF, vLLM (Metal on Apple Silicon), and Ollama, unified interface
 - **llama-bench integration** — sweep batch sizes, cache types, and flash attention from a GUI; results saved to history with a Chart.js chart
 - **Built for power users** — per-model sampling params, profiles, thinking mode, agent config sync, global hotkey
 
@@ -68,7 +68,7 @@ If you want a polished GUI with model discovery and a chat interface, use LM Stu
 
 ## Core Features
 
-- **One-click model switching** — MLX and GGUF in the same menu; cancels in-flight loads instantly
+- **One-click model switching** — MLX, GGUF, vLLM, and Ollama in the same menu; cancels in-flight loads instantly
 - **Live status in menu bar** — shows active model name; `⚡` icon with memory pressure indicator
 - **Default model at startup** — auto-loads your preferred model on every launch
 - **Download from HuggingFace** — search, preview size, and download with real-time MB/s progress; resumes interrupted downloads automatically

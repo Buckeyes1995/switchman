@@ -8,6 +8,8 @@
 | Python 3.13 | `/opt/homebrew/bin/python3.13` |
 | [oMLX](https://github.com/jmorganca/omlx) | Only needed for MLX models |
 | [llama.cpp](https://github.com/ggerganov/llama.cpp) | Only needed for GGUF models and llama-bench |
+| [vllm-metal](https://github.com/vllm-project/vllm-metal) | Only needed for vLLM backend (Apple Silicon) |
+| [Ollama](https://ollama.com) | Only needed for Ollama backend |
 
 ```bash
 brew install python@3.13
@@ -90,6 +92,30 @@ tail -f ~/Library/Logs/switchman.log
 6. Click **↻ Refresh Models** — your models appear
 
 **Don't have models yet?** Use **⬇ Download from HuggingFace…** to grab a GGUF model, then [build llama.cpp from source](https://github.com/ggerganov/llama.cpp#build).
+
+---
+
+## Optional Backends
+
+### vLLM (Apple Silicon Metal)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash
+```
+
+In Settings → Inference → vLLM:
+- Set **vllm binary** to `~/.venv-vllm-metal/bin/vllm`
+- Set **vLLM models dir** to your MLX models directory (vllm-metal runs MLX-format models)
+
+### Ollama
+
+```bash
+brew install ollama
+ollama serve          # start the daemon
+ollama pull llama3.2  # download a model
+```
+
+Models appear automatically in the `── Ollama ──` menu section. Configure host in Settings → Inference → Ollama (default: `http://localhost:11434`).
 
 ---
 

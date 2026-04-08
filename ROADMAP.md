@@ -112,10 +112,30 @@ def sync_cursor_config(port: int) -> None:
 
 ---
 
-## Larger / Longer Term
+## New Features (2026-04-08)
 
-### Ollama Backend
-Add Ollama as a third inference backend alongside oMLX and llama.cpp. Detect running Ollama instances, list their models, switch without restarting.
+### ~~vLLM Backend~~ ✓ Done
+Full vLLM inference server support (ui2 branch):
+- `scan_vllm()` scans local HuggingFace model dirs + HF model IDs from config
+- `_switch_vllm()` launches `vllm serve` with `--served-model-name`, `--max-model-len`, extra args
+- Settings → Inference → vLLM section: binary, port, API key, models dir, extra args, HF model IDs
+- `── vLLM ──` menu section
+- `active_api(cfg, kind)` / `active_base_url(cfg, kind)` helpers route port/API-key for all backends
+- **macOS:** uses [vllm-metal](https://github.com/vllm-project/vllm-metal) — install via `curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash`. Runs MLX-format models on Apple Silicon via Metal. Default binary: `~/.venv-vllm-metal/bin/vllm`.
+
+### ~~Ollama Backend~~ ✓ Done
+Full Ollama inference support (ui2 branch):
+- `scan_ollama()` queries running Ollama at configured host URL for installed models
+- `_switch_ollama()` unloads current model, stops other engines, sends warmup request to load
+- `_unload_ollama()` sends `keep_alive: 0` to evict model from GPU memory
+- `── Ollama ──` menu section; models appear automatically when Ollama is running
+- Settings → Inference → Ollama section: host URL, optional API key (for remote Ollama)
+- No process management — Ollama runs as a system daemon (`ollama serve`)
+- Install: `brew install ollama`, then `ollama pull <model>`
+
+---
+
+## Larger / Longer Term
 
 ### richer Menu Bar Popover
 Replace the plain NSMenu with a custom NSPopover showing:

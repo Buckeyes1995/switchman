@@ -18,6 +18,25 @@ Click any model → **▶ Select**. Switchman starts the right inference engine 
 4. Waits for server to accept connections
 5. Fires a notification and updates the menu bar
 
+**vLLM models (via vllm-metal on Apple Silicon):**
+1. Stops other engines (freeing unified memory)
+2. Spawns `vllm serve <path> --served-model-name <name> --port <port>`
+3. Waits for server health check (up to 3 min)
+4. Fires a notification and updates the menu bar
+- Install: `curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash`
+- Set binary in Settings → Inference → vLLM to `~/.venv-vllm-metal/bin/vllm`
+- Runs MLX-format models on Apple Silicon Metal
+
+**Ollama models:**
+1. Unloads any active Ollama model (`keep_alive: 0`)
+2. Stops other engines (freeing unified memory)
+3. Sends a warmup request to load the model into GPU memory
+4. Fires a notification and updates the menu bar
+- Ollama runs as a system daemon — Switchman does not manage the process
+- Install: `brew install ollama`, start with `ollama serve`, pull models with `ollama pull <model>`
+- Models appear automatically in the `── Ollama ──` menu section when Ollama is running
+- Configure host URL in Settings → Inference → Ollama (default: `http://localhost:11434`)
+
 **Cancellation:** selecting a new model while one is loading immediately cancels the previous load — no waiting.
 
 **⏹ Stop Engine** — kills the active server and frees unified memory.
